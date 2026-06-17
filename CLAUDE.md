@@ -73,6 +73,57 @@ lines / INAV programming `logic` op 25), firmware-hash allowlist + GitHub.
 ## Workflow
 
 - `pytest` must stay green; add tests for every new check (pass + fail cases).
-- `drone-check demo` runs the pipeline against built-in sample drones (no HW).
-- `drone-check serve` is the local web UI + USB hot-plug watcher.
 - See `README.md` for usage and `HARDWARE_TEST.md` for real-hardware bring-up.
+
+## Commands (this project, Windows / PowerShell)
+
+The repo uses an editable install in a local venv at `.venv`. All commands below
+assume the project root as the working directory. Prefer `.venv\Scripts\python.exe`
+over a bare `python` so the right interpreter is always used.
+
+```powershell
+# One-time setup
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+# Tests (must stay green)
+.\.venv\Scripts\python.exe -m pytest -q
+
+# Run the whole pipeline against built-in sample drones (no hardware)
+.\.venv\Scripts\python.exe -m drone_check demo
+
+# List serial ports / first-contact probe / full capture (real hardware)
+.\.venv\Scripts\python.exe -m drone_check ports
+.\.venv\Scripts\python.exe -m drone_check probe COM5 --debug --raw
+.\.venv\Scripts\python.exe -m drone_check inspect COM5
+
+# Refresh the firmware-hash allowlist from official release tags
+.\.venv\Scripts\python.exe scripts\update_allowlist.py
+```
+
+### Web server (start / verify / stop)
+
+`serve` is long-running, so start it in the background (do NOT block the turn):
+
+```powershell
+# start (background) — http://127.0.0.1:8000
+.\.venv\Scripts\python.exe -m drone_check serve --host 127.0.0.1 --port 8000
+
+# verify it is up
+Invoke-WebRequest -Uri http://127.0.0.1:8000/ -UseBasicParsing -TimeoutSec 2
+
+# stop (free port 8000)
+$c = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue
+if ($c) { $c.OwningProcess | Select-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force } }
+```
+
+After editing `server.py` / `orchestrator.py` (or any Python), **restart** the
+server to load the change; `web/index.html` is re-read per request (just reload
+the page). `serve --demo` skips the USB watcher (use the "Run demo" button).
+
+Notes:
+- `git` push over the native client prints progress to stderr; PowerShell shows
+  it as a red `RemoteException` even on success — check the `-> main` line and
+  `git status -sb` instead of trusting the colour.
+- Commit messages with parentheses/quotes break PowerShell here-strings passed to
+  `git commit -m`; write the message to a file and use `git commit -F <file>`.
