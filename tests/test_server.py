@@ -145,3 +145,67 @@ def test_open_folder_unknown_capture_returns_404(tmp_path):
     with TestClient(app) as client:
         resp = client.post("/api/captures/..%2Fsecret/open-folder")
         assert resp.status_code == 404
+
+
+class _FakeSitl:
+    """Stand-in for SitlRunner so route tests never touch WSL/SITL."""
+
+    def __init__(self, *_a, **_k):
+        self.started = None
+        self.stopped = False
+
+    def start(self, capture_id, version, dump_text):
+        from drone_check.sitl import SitlStatus
+        self.started = (capture_id, version)
+        return SitlStatus(running=True, version=version, capture_id=capture_id,
+                          connect_url="ws://127.0.0.1:6761")
+
+    def status(self):
+        from drone_check.sitl import SitlStatus
+        return SitlStatus(running=False)
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_configurator_starts_sitl_for_capture(tmp_path, monkeypatch):
+    folder = _seed_capture(tmp_path)
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post(f"/api/captures/{folder.name}/configurator")
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["connect_url"] == "ws://127.0.0.1:6761"
+        assert data["version"] == "4.4.0"
+
+
+def test_configurator_disabled_in_config(tmp_path, monkeypatch):
+    _seed_capture(tmp_path)
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    cfg = _config(tmp_path)
+    cfg.settings.sitl_enabled = False
+    app = create_app(cfg, demo=True)
+    with TestClient(app) as client:
+        resp = client.post("/api/captures/2026-06-17T10-00-00Z_cap/configurator")
+        assert resp.json()["ok"] is False
+
+
+def test_configurator_no_dump_fails(tmp_path, monkeypatch):
+    folder = tmp_path / "nodump"
+    (folder / "raw").mkdir(parents=True)
+    (folder / "snapshot.json").write_text(json.dumps(
+        {"firmware": {"version": "4.4.0"}}), encoding="utf-8")
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post(f"/api/captures/{folder.name}/configurator")
+        assert resp.json()["ok"] is False
+        assert "dump" in resp.json()["reason"]
+
+
+def test_sitl_stop_route(tmp_path, monkeypatch):
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        assert client.post("/api/sitl/stop").json()["ok"] is True

@@ -102,6 +102,41 @@ names come from the drone. Unplug and repeat.
 
 For the first run against real hardware, follow [HARDWARE_TEST.md](HARDWARE_TEST.md).
 
+## Logs page & "view in Configurator"
+
+The web UI has a second page at `/logs` (link in the header) that lists every
+captured drone in the log directory, newest first. It is searchable (pilot,
+craft, UID, firmware version, folder) and filterable by verdict and firmware
+variant. Each row offers:
+
+- **Open folder** — opens the immutable capture folder in the OS file manager.
+- **View in Configurator** — loads the capture's `dump all` into a
+  version-matched **Betaflight SITL** instance so the real Betaflight web
+  Configurator can connect and show exactly what the drone owner would see. All
+  firmware-version-specific GUI behaviour is then handled by the real
+  Configurator. After ~30 s a bar shows the connect address; in the web
+  Configurator enable *manual connection* and connect to `ws://127.0.0.1:6761`.
+
+### Setup for "view in Configurator" (one-time)
+
+SITL is built from the firmware source for the matching version and run under
+**WSL** (the binary is a Linux host process). drone-check never builds — it only
+selects a pre-built binary from a cache.
+
+```bash
+# inside WSL (Ubuntu), once:
+sudo apt-get install -y build-essential ruby git
+# build the SITL versions you need (matches the firmware version of your captures):
+bash scripts/build_sitl.sh 4.4.0 4.5.4
+```
+
+`websockify` (a Python dependency) bridges the WebSocket-only web Configurator
+to SITL's TCP port. Configure under `sitl:` in `config/settings.yaml`.
+
+**Limitation:** stock SITL builds have no real hardware, so the VTX, motor and
+mixer tabs show warnings and VTX settings are not displayed. drone-check's own
+dump analysis remains the authoritative source for VTX power.
+
 ## Output
 
 Every capture is written once into its own immutable folder (default template

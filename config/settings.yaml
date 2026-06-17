@@ -56,3 +56,18 @@ parse_diff_fallback: false
 firmware_hash:
   use_allowlist: true
   use_github: true
+
+# "View in Configurator": load a stored capture into a version-matched Betaflight
+# SITL (run under WSL) so the real web Configurator can connect and show exactly
+# what the drone owner would see. SITL binaries are PRE-BUILT per firmware version
+# with scripts/build_sitl.sh (inside WSL); drone-check only selects them.
+# Note: stock SITL omits VTX — VTX settings are NOT shown here; drone-check's own
+# dump analysis stays authoritative for VTX power.
+sitl:
+  enabled: true
+  distro: Ubuntu              # WSL distro holding the SITL cache
+  cache_dir: ~/.cache/drone-check/sitl
+  run_dir: ~/.cache/drone-check/run
+  tcp_port: 5761              # SITL UART1
+  ws_port: 6761               # websockify endpoint (ws://127.0.0.1:6761)
+  boot_timeout: 30.0

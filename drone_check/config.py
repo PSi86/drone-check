@@ -57,6 +57,18 @@ class Settings:
     # parser fall back to `diff all`/`diff` when no dump is present.
     parse_diff_fallback: bool = False
 
+    # "View in Configurator": load a capture into a version-matched Betaflight
+    # SITL (built under WSL by scripts/build_sitl.sh) so the real web
+    # Configurator can connect to it. See sitl.py for the full flow.
+    sitl_enabled: bool = True
+    sitl_distro: str = "Ubuntu"  # WSL distro that has the SITL cache
+    # WSL-side paths (~ expands inside the distro).
+    sitl_cache_dir: str = "~/.cache/drone-check/sitl"
+    sitl_run_dir: str = "~/.cache/drone-check/run"
+    sitl_tcp_port: int = 5761  # SITL UART1
+    sitl_ws_port: int = 6761  # websockify endpoint for the web Configurator
+    sitl_boot_timeout: float = 30.0
+
 
 @dataclass
 class AppConfig:
@@ -97,6 +109,15 @@ def load_settings(path: Path) -> Settings:
     if "cli_commands" in data and data["cli_commands"]:
         s.cli_commands = [str(c) for c in data["cli_commands"]]
     s.parse_diff_fallback = bool(data.get("parse_diff_fallback", s.parse_diff_fallback))
+
+    sitl = data.get("sitl", {}) or {}
+    s.sitl_enabled = bool(sitl.get("enabled", s.sitl_enabled))
+    s.sitl_distro = str(sitl.get("distro", s.sitl_distro))
+    s.sitl_cache_dir = str(sitl.get("cache_dir", s.sitl_cache_dir))
+    s.sitl_run_dir = str(sitl.get("run_dir", s.sitl_run_dir))
+    s.sitl_tcp_port = int(sitl.get("tcp_port", s.sitl_tcp_port))
+    s.sitl_ws_port = int(sitl.get("ws_port", s.sitl_ws_port))
+    s.sitl_boot_timeout = float(sitl.get("boot_timeout", s.sitl_boot_timeout))
     return s
 
 

@@ -54,6 +54,20 @@
     .empty { color: var(--muted); padding: 40px; text-align: center; }
     .hidden { display: none; }
     code { color: #c7d2fe; }
+    .sitl { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
+            border-top: 1px solid var(--accent); padding: 14px 24px; display: flex;
+            align-items: center; gap: 16px; flex-wrap: wrap; }
+    .sitl .grow { flex: 1; min-width: 240px; }
+    .sitl .title { font-weight: 600; }
+    .sitl .url { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+                 background: #0c0e12; border: 1px solid var(--line); border-radius: 6px;
+                 padding: 4px 8px; user-select: all; }
+    .sitl .note { color: #f0c879; font-size: 12px; margin-top: 4px; }
+    .sitl a.cfg-link { color: #fff; background: var(--accent); text-decoration: none;
+                       padding: 8px 14px; border-radius: 6px; }
+    .sitl button { background: #2a1212; color: #f3a0a0; border: 1px solid var(--red);
+                   padding: 8px 14px; border-radius: 6px; cursor: pointer; }
+    .busy { opacity: .6; pointer-events: none; }
   </style>
 </head>
 <body>
@@ -90,6 +104,17 @@
     </table>
     <div class="empty hidden" id="empty">Keine Logs gefunden.</div>
   </main>
+
+  <div class="sitl hidden" id="sitlBar">
+    <div class="grow">
+      <div class="title" id="sitlTitle"></div>
+      <div class="note">SITL hat keine echte Hardware: VTX-, Motor- und Mixer-Tabs zeigen Warnungen
+        (Werte sind dennoch geladen, im CLI-Tab sichtbar). Für VTX gilt der drone-check-Report.</div>
+    </div>
+    <div>Verbinden im Configurator (Manual): <span class="url" id="sitlUrl"></span></div>
+    <a class="cfg-link" id="sitlOpen" href="https://app.betaflight.com/" target="_blank" rel="noopener">Configurator öffnen</a>
+    <button id="sitlStop">SITL stoppen</button>
+  </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -133,7 +158,7 @@
       const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
       const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
       const cfgBtn = c.has_dump
-        ? `<button title="Phase 2 — bald verfügbar" disabled>Im Configurator</button>` : "";
+        ? `<button data-cfg="${esc(c.id)}" data-ver="${esc((c.firmware||{}).version||"")}">Im Configurator</button>` : "";
       return `<tr>
         <td>${verdictBadge(c)}</td>
         <td class="ts">${esc(c.captured_at || c.id)}</td>
@@ -155,6 +180,9 @@
       $("rows").querySelectorAll("button[data-open]").forEach((b) => {
         b.onclick = () => openFolder(b.getAttribute("data-open"), b);
       });
+      $("rows").querySelectorAll("button[data-cfg]").forEach((b) => {
+        b.onclick = () => openConfigurator(b.getAttribute("data-cfg"), b.getAttribute("data-ver"), b);
+      });
     }
 
     function fillVariants() {
@@ -173,12 +201,49 @@
       } finally { btn.disabled = false; }
     }
 
+    function showSitl(st) {
+      if (st && st.running) {
+        $("sitlTitle").textContent = `SITL läuft — Firmware ${st.version || "?"}`
+          + (st.capture_id ? `  ·  ${st.capture_id}` : "");
+        $("sitlUrl").textContent = st.connect_url || "";
+        $("sitlBar").classList.remove("hidden");
+      } else {
+        $("sitlBar").classList.add("hidden");
+      }
+    }
+
+    async function openConfigurator(id, ver, btn) {
+      const prev = btn.textContent;
+      btn.textContent = "Starte SITL…";
+      document.body.classList.add("busy");
+      try {
+        const r = await fetch(`/api/captures/${encodeURIComponent(id)}/configurator`, { method: "POST" });
+        const d = await r.json().catch(() => ({}));
+        if (d.ok) {
+          showSitl({ running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url });
+        } else {
+          alert("SITL konnte nicht gestartet werden:\n" + (d.reason || r.status));
+        }
+      } finally {
+        btn.textContent = prev;
+        document.body.classList.remove("busy");
+      }
+    }
+
+    async function stopSitl() {
+      await fetch("/api/sitl/stop", { method: "POST" });
+      showSitl({ running: false });
+    }
+    $("sitlStop").onclick = stopSitl;
+
     async function load() {
       const r = await fetch("/api/captures");
       const data = await r.json().catch(() => ({ captures: [] }));
       CAPTURES = data.captures || [];
       fillVariants();
       render();
+      // Reflect any already-running SITL session.
+      try { showSitl(await (await fetch("/api/sitl/status")).json()); } catch (e) {}
     }
 
     $("q").addEventListener("input", render);
