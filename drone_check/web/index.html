@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>drone-check</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #1a1d24; --muted: #8b93a7; --text: #e6e9ef;
+      --green: #1f9d55; --green-bg: #0e3b22; --red: #d23b3b; --red-bg: #3b1010;
+      --accent: #3b82f6; --line: #2a2f3a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, "Segoe UI", sans-serif;
+           background: var(--bg); color: var(--text); }
+    header { padding: 16px 24px; border-bottom: 1px solid var(--line);
+             display: flex; align-items: center; gap: 16px; }
+    header h1 { font-size: 18px; margin: 0; }
+    header .status { color: var(--muted); font-size: 13px; }
+    .demo-btn { margin-left: auto; background: var(--accent); color: #fff;
+                border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 24px; }
+    .card { background: var(--panel); border: 1px solid var(--line);
+            border-radius: 10px; padding: 18px; }
+    .card h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase;
+               letter-spacing: .06em; color: var(--muted); }
+    .verdict { grid-column: 1 / -1; text-align: center; padding: 28px;
+               border-radius: 12px; font-size: 30px; font-weight: 700;
+               background: var(--panel); border: 1px solid var(--line); }
+    .verdict.pass { background: var(--green-bg); border-color: var(--green); color: #7ee2a8; }
+    .verdict.fail { background: var(--red-bg); border-color: var(--red); color: #f3a0a0; }
+    .verdict .sub { display:block; font-size: 14px; font-weight: 400;
+                    color: var(--muted); margin-top: 8px; }
+    .steps li { list-style: none; padding: 6px 0; display: flex; gap: 10px;
+                align-items: center; border-bottom: 1px dashed var(--line); }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+    .dot.ok { background: var(--green); } .dot.run { background: var(--accent); }
+    .dot.err { background: var(--red); }
+    .rule { padding: 8px 10px; border-radius: 6px; margin-bottom: 6px;
+            display: flex; gap: 10px; align-items: baseline; }
+    .rule.pass { background: #11271a; } .rule.fail { background: #2a1212; }
+    .rule .tag { font-size: 11px; font-weight: 700; padding: 1px 6px;
+                 border-radius: 4px; }
+    .rule.pass .tag { background: var(--green); color: #fff; }
+    .rule.fail .tag { background: var(--red); color: #fff; }
+    .rule .why { color: var(--muted); font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    td { padding: 4px 0; } td.k { color: var(--muted); width: 42%; }
+    .pilot { display:flex; gap: 8px; margin-top: 8px; }
+    .pilot input { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--line);
+                   background: #0c0e12; color: var(--text); }
+    .pilot button { background: var(--green); color:#fff; border:0; padding: 8px 14px;
+                    border-radius: 6px; cursor: pointer; }
+    .hidden { display: none; }
+    code { color: #c7d2fe; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>drone-check</h1>
+    <span class="status" id="conn">connecting…</span>
+    <button class="demo-btn" id="demo">Run demo</button>
+  </header>
+
+  <main>
+    <div class="verdict" id="verdict">Waiting for a drone…
+      <span class="sub" id="verdictSub">Plug in a flight controller via USB.</span>
+    </div>
+
+    <div class="card">
+      <h2>Capture</h2>
+      <ul class="steps" id="steps"></ul>
+      <div class="pilot hidden" id="pilotBox">
+        <input id="pilotName" placeholder="Pilot name (optional)" />
+        <button id="pilotSave">Save</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Drone</h2>
+      <table id="info"><tbody></tbody></table>
+    </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>Checks</h2>
+      <div id="rules"></div>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentUid = "";
+
+    const STEP_LABELS = {
+      identify: "Identify (MSP)", cli: "Read settings (CLI)",
+      firmware_hash: "Firmware hash", evaluate: "Evaluate rules",
+    };
+    const stepEls = {};
+    function setStep(step, status) {
+      let li = stepEls[step];
+      if (!li) {
+        li = document.createElement("li");
+        li.innerHTML = `<span class="dot"></span><span class="lbl">${STEP_LABELS[step] || step}</span>`;
+        $("steps").appendChild(li);
+        stepEls[step] = li;
+      }
+      const dot = li.querySelector(".dot");
+      dot.className = "dot " + (status === "ok" ? "ok" : status === "error" ? "err" : "run");
+    }
+
+    function resetCapture() {
+      $("steps").innerHTML = ""; for (const k in stepEls) delete stepEls[k];
+      $("rules").innerHTML = ""; $("info").querySelector("tbody").innerHTML = "";
+      $("verdict").className = "verdict"; $("verdict").firstChild.textContent = "Capturing…";
+      $("verdictSub").textContent = "";
+    }
+
+    function renderInfo(snap) {
+      const fw = snap.firmware, vtx = snap.vtx;
+      const rows = [
+        ["Pilot", snap.pilot || "—"], ["FC serial", snap.uid],
+        ["Firmware", `${fw.firmware_name} ${fw.version} (${fw.variant})`],
+        ["Target / board", `${fw.target} / ${fw.board_name}`],
+        ["Git hash", fw.git_hash],
+        ["Hash approved", `${snap.firmware_hash_approved} (${snap.firmware_hash_source})`],
+        ["VTX armed max", `${vtx.power_armed_max_mw} mW`],
+        ["VTX disarmed", `${vtx.power_disarmed_mw} mW`],
+        ["Low power on disarm", vtx.low_power_disarm],
+        ["Power switches", vtx.switches.length],
+      ];
+      $("info").querySelector("tbody").innerHTML = rows
+        .map(([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("");
+    }
+
+    function renderRules(ev) {
+      $("rules").innerHTML = ev.results.map(r => `
+        <div class="rule ${r.passed ? "pass" : "fail"}">
+          <span class="tag">${r.passed ? "PASS" : "FAIL"}</span>
+          <div><div><code>${r.rule_id}</code> — ${r.description}</div>
+          ${(!r.passed && r.detail) ? `<div class="why">${r.detail}</div>` : ""}</div>
+          <span class="why" style="margin-left:auto">${r.severity}</span>
+        </div>`).join("");
+    }
+
+    function showVerdict(passed) {
+      const v = $("verdict");
+      v.className = "verdict " + (passed ? "pass" : "fail");
+      v.firstChild.textContent = passed ? "PASS ✓" : "FAIL ✗";
+      $("verdictSub").textContent = passed
+        ? "All critical checks passed." : "One or more critical checks failed.";
+    }
+
+    function handle(evt) {
+      switch (evt.type) {
+        case "ready": $("conn").textContent = "ready — waiting for a drone"; break;
+        case "detected":
+          resetCapture();
+          $("conn").textContent = "drone detected on " + (evt.port || "?"); break;
+        case "step": setStep(evt.step, evt.status); break;
+        case "need_pilot":
+          currentUid = evt.uid; $("pilotBox").classList.remove("hidden"); $("pilotName").focus(); break;
+        case "verdict":
+          $("pilotBox").classList.add("hidden");
+          renderInfo(evt.snapshot); renderRules(evt.evaluation); showVerdict(evt.passed);
+          $("conn").textContent = "done — " + (evt.path || ""); break;
+        case "error":
+          setStep("identify", "error");
+          $("verdictSub").textContent = "Error: " + evt.message; break;
+      }
+    }
+
+    function connect() {
+      const ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/ws");
+      ws.onopen = () => { $("conn").textContent = "ready"; setInterval(() => ws.readyState === 1 && ws.send("ping"), 15000); };
+      ws.onmessage = (m) => handle(JSON.parse(m.data));
+      ws.onclose = () => { $("conn").textContent = "disconnected — retrying…"; setTimeout(connect, 2000); };
+    }
+    connect();
+
+    $("pilotSave").onclick = async () => {
+      await fetch("/api/pilot", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: currentUid, name: $("pilotName").value }) });
+      $("pilotBox").classList.add("hidden"); $("pilotName").value = "";
+    };
+    $("demo").onclick = () => fetch("/api/demo", { method: "POST" });
+  </script>
+</body>
+</html>

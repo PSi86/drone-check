@@ -1,0 +1,42 @@
+# drone-check runtime settings
+
+# Where capture folders are written (organised as <pilot>/<fc_serial>/<timestamp>).
+log_dir: logs
+
+# USB CDC virtual serial: the baud rate is nominal and largely ignored, but some
+# drivers want a sane value.
+serial_baudrate: 115200
+
+# Ask the operator for a pilot name when a drone is detected.
+ask_pilot_name: true
+
+# Seconds between USB hot-plug polls.
+poll_interval: 1.0
+
+# Serial / CLI timing. Increase the idle/max values for slow links if a capture
+# reports an incomplete response.
+connect_delay: 0.3        # settle time after opening the port
+cli_idle_timeout: 1.5     # end a read after this gap with no bytes
+cli_max_wait: 45.0        # absolute cap per CLI command (dump all is large)
+
+# Set a directory to record raw serial traffic for every capture (debugging).
+# debug_dir: debug
+
+# CLI commands captured during the text-CLI phase, in order.
+#   `dump all` -> authoritative source: every setting with its absolute value,
+#                 so rule evaluation never has to guess defaults.
+#   `diff all` -> the community-standard portable/human backup. OPTIONAL: it is
+#                 NOT captured by default. Add it to the list to also store it.
+cli_commands:
+  - version
+  - dump all
+  - status
+
+# Only `dump all`/`dump` is parsed by default. Enable this only if you feed
+# `diff all`/`diff` captures (with no dump present) to the parser.
+parse_diff_fallback: false
+
+# Firmware-hash verification: approve if either enabled source approves.
+firmware_hash:
+  use_allowlist: true
+  use_github: true

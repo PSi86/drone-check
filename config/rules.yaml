@@ -1,0 +1,36 @@
+# drone-check rule set (CEL expressions — https://cel.dev)
+#
+# Available bindings:
+#   drone.firmware.{variant,firmware_name,version,target,board_name,git_hash,...}
+#   drone.vtx.{power_armed_max_mw,power_disarmed_mw,low_power_disarm,
+#              power_global_mw,switches[].{aux_channel,power_index,reachable_mw[]}}
+#   drone.settings["<cli_setting_name>"]   (raw string values)
+#   checks.firmware_hash_approved          (bool)
+#
+# A drone passes only if every rule with severity "critical" passes.
+
+rules:
+  - id: vtx-power-disarmed-max
+    description: "VTX power while disarmed must not exceed 25 mW"
+    severity: critical
+    expr: 'drone.vtx.power_disarmed_mw <= 25'
+
+  - id: vtx-power-armed-max
+    description: "VTX power while armed must not exceed 25 mW"
+    severity: critical
+    expr: 'drone.vtx.power_armed_max_mw <= 25'
+
+  - id: vtx-no-switch-exceeds-25
+    description: "No radio switch position may select more than 25 mW"
+    severity: critical
+    expr: 'drone.vtx.switches.all(s, s.reachable_mw.all(p, p <= 25))'
+
+  - id: firmware-hash-approved
+    description: "Firmware git hash must be approved (allowlist or official repo)"
+    severity: critical
+    expr: 'checks.firmware_hash_approved'
+
+  - id: vtx-power-table-known
+    description: "VTX power table should come from the firmware, not a fallback"
+    severity: warning
+    expr: 'drone.vtx.power_table_source == "vtxtable"'
