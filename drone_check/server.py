@@ -187,8 +187,8 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
             "ok": True,
             "connect_url": status.connect_url,
             "version": status.version,
-            "note": "SITL has no real hardware: VTX/motor/mixer tabs show warnings "
-                    "(values are still loaded). VTX is covered by the drone-check report.",
+            "note": "SITL has no real motor outputs, so the motor/mixer tabs show "
+                    "warnings — that is expected and does not affect the inspection.",
         })
 
     @app.get("/api/sitl/status")

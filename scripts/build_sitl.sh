@@ -49,6 +49,23 @@ build_one() {
     sed -i "s/ -Werror / -Wno-error /g" Makefile
   fi
 
+  # The stock SITL target compiles VTX out (USE_VTX is never defined for SITL),
+  # so the VTX config table is invisible in the Configurator — exactly the data
+  # an inspector most needs. Re-enable the VTX *config* stack (table only, no
+  # device driver needed): vtxtable powervalues/powerlabels then load and show.
+  local sitl_target="src/main/target/SITL/target.h"
+  if [ -f "$sitl_target" ] && ! grep -q "DRONE_CHECK_VTX" "$sitl_target"; then
+    cat >> "$sitl_target" <<'VTXEOF'
+
+// drone-check: expose the VTX config table in SITL (config data only, no device
+// hardware). Lets the Configurator show vtxtable powervalues/powerlabels.
+#define DRONE_CHECK_VTX
+#define USE_VTX_COMMON
+#define USE_VTX_CONTROL
+#define USE_VTX_TABLE
+VTXEOF
+  fi
+
   # Older Makefiles validate the ARM toolchain even for the SITL host target.
   # arm_sdk_install fetches it into the repo's tools/ dir (no sudo, no PATH change).
   if grep -q "arm_sdk_install" Makefile 2>/dev/null; then

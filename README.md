@@ -133,9 +133,13 @@ bash scripts/build_sitl.sh 4.4.0 4.5.4
 `websockify` (a Python dependency) bridges the WebSocket-only web Configurator
 to SITL's TCP port. Configure under `sitl:` in `config/settings.yaml`.
 
-**Limitation:** stock SITL builds have no real hardware, so the VTX, motor and
-mixer tabs show warnings and VTX settings are not displayed. drone-check's own
-dump analysis remains the authoritative source for VTX power.
+`build_sitl.sh` patches the SITL target to compile in the **VTX config table**
+(stock SITL omits it), so the Configurator shows the drone's `vtxtable`
+powervalues/powerlabels — the anti-cheat-relevant data. drone-check's own dump
+analysis still remains the authoritative source for VTX power.
+
+**Limitation:** SITL has no real motor outputs, so the motor and mixer tabs show
+warnings. That is expected and does not affect the inspection.
 
 ## Output
 
