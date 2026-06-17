@@ -16,6 +16,10 @@
     header { padding: 16px 24px; border-bottom: 1px solid var(--line);
              display: flex; align-items: center; gap: 16px; }
     header h1 { font-size: 18px; margin: 0; }
+    header nav { display: flex; gap: 14px; margin-left: 8px; }
+    header nav a { color: var(--muted); text-decoration: none; font-size: 14px; }
+    header nav a.active { color: var(--text); font-weight: 600; }
+    header nav a:hover { color: var(--text); }
     header .status { color: var(--muted); font-size: 13px; }
     .demo-btn { margin-left: auto; background: var(--accent); color: #fff;
                 border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; }
@@ -71,6 +75,10 @@
 <body>
   <header>
     <h1>drone-check</h1>
+    <nav>
+      <a href="/" class="active">Live</a>
+      <a href="/logs">Logs</a>
+    </nav>
     <span class="status" id="conn">connecting…</span>
     <button class="demo-btn" id="demo">Run demo</button>
   </header>

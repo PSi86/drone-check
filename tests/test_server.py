@@ -92,3 +92,56 @@ def test_operator_pilot_enabled_sets_fallback(tmp_path):
         resp = client.post("/api/operator-pilot", json={"name": "Bob"})
         data = resp.json()
         assert data["ok"] is True and data["operator_pilot"] == "Bob"
+
+
+def _seed_capture(base, name="2026-06-17T10-00-00Z_cap", passed=True):
+    folder = base / name
+    (folder / "raw").mkdir(parents=True)
+    (folder / "snapshot.json").write_text(json.dumps({
+        "captured_at": "2026-06-17T10-00-00Z", "uid": "abc",
+        "pilot_name": "Ada", "craft_name": "Quad",
+        "firmware": {"variant": "BTFL", "version": "4.4.0", "git_hash": "deadbeef"},
+        "firmware_hash_approved": True, "firmware_hash_source": "github",
+    }), encoding="utf-8")
+    (folder / "evaluation.json").write_text(json.dumps({"passed": passed}), encoding="utf-8")
+    (folder / "raw" / "dump_all.txt").write_text("batch start\nsave\n", encoding="utf-8")
+    return folder
+
+
+def test_logs_page_served(tmp_path):
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.get("/logs")
+        assert resp.status_code == 200
+        assert "drone-check" in resp.text
+
+
+def test_api_captures_lists_stored_captures(tmp_path):
+    _seed_capture(tmp_path)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        data = client.get("/api/captures").json()
+        assert len(data["captures"]) == 1
+        cap = data["captures"][0]
+        assert cap["pilot_name"] == "Ada"
+        assert cap["verdict"] is True
+        assert cap["has_dump"] is True
+
+
+def test_open_folder_invokes_file_manager(tmp_path, monkeypatch):
+    folder = _seed_capture(tmp_path)
+    opened = {}
+    monkeypatch.setattr("drone_check.captures.open_in_file_manager",
+                        lambda p: opened.setdefault("path", str(p)))
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post(f"/api/captures/{folder.name}/open-folder")
+        assert resp.json() == {"ok": True}
+        assert opened["path"] == str(folder.resolve())
+
+
+def test_open_folder_unknown_capture_returns_404(tmp_path):
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post("/api/captures/..%2Fsecret/open-folder")
+        assert resp.status_code == 404

@@ -23,6 +23,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .applog import AppLog
+from . import captures
 from .config import AppConfig
 from .flightcontroller import FakeFlightController, RealFlightController
 from .orchestrator import Orchestrator
@@ -128,6 +129,29 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     @app.get("/")
     async def index() -> HTMLResponse:
         return HTMLResponse((_WEB_DIR / "index.html").read_text(encoding="utf-8"))
+
+    @app.get("/logs")
+    async def logs_page() -> HTMLResponse:
+        return HTMLResponse((_WEB_DIR / "logs.html").read_text(encoding="utf-8"))
+
+    @app.get("/api/captures")
+    async def list_captures() -> JSONResponse:
+        """List every stored capture in the log directory (newest first)."""
+        items = captures.list_captures(config.settings.log_dir)
+        return JSONResponse({"captures": [c.to_dict() for c in items]})
+
+    @app.post("/api/captures/{capture_id}/open-folder")
+    async def open_capture_folder(capture_id: str) -> JSONResponse:
+        """Open a capture folder in the local OS file manager."""
+        try:
+            folder = captures.resolve_capture_dir(config.settings.log_dir, capture_id)
+        except ValueError:
+            return JSONResponse({"ok": False, "reason": "unknown capture"}, status_code=404)
+        try:
+            captures.open_in_file_manager(folder)
+        except Exception as exc:  # pragma: no cover - OS-dependent failure
+            return JSONResponse({"ok": False, "reason": str(exc)}, status_code=500)
+        return JSONResponse({"ok": True})
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>drone-check — logs</title>
+  <style>
+    :root {
+      --bg: #0f1115; --panel: #1a1d24; --muted: #8b93a7; --text: #e6e9ef;
+      --green: #1f9d55; --green-bg: #0e3b22; --red: #d23b3b; --red-bg: #3b1010;
+      --accent: #3b82f6; --line: #2a2f3a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, "Segoe UI", sans-serif;
+           background: var(--bg); color: var(--text); }
+    header { padding: 16px 24px; border-bottom: 1px solid var(--line);
+             display: flex; align-items: center; gap: 16px; }
+    header h1 { font-size: 18px; margin: 0; }
+    header nav { display: flex; gap: 14px; margin-left: 8px; }
+    header nav a { color: var(--muted); text-decoration: none; font-size: 14px; }
+    header nav a.active { color: var(--text); font-weight: 600; }
+    header nav a:hover { color: var(--text); }
+    header .count { margin-left: auto; color: var(--muted); font-size: 13px; }
+    main { padding: 24px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+    .filters input[type=search], .filters select {
+      padding: 9px 12px; border-radius: 6px; border: 1px solid var(--line);
+      background: #0c0e12; color: var(--text); font-size: 14px; }
+    .filters input[type=search] { flex: 1; min-width: 220px; }
+    .filters button { background: var(--panel); color: var(--text);
+      border: 1px solid var(--line); padding: 9px 14px; border-radius: 6px; cursor: pointer; }
+    .filters button:hover { border-color: var(--accent); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th { text-align: left; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: .05em; font-size: 11px;
+      padding: 8px 10px; border-bottom: 1px solid var(--line); }
+    tbody td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    tbody tr:hover { background: #161922; }
+    .badge { display: inline-block; font-size: 11px; font-weight: 700;
+      padding: 2px 8px; border-radius: 4px; }
+    .badge.pass { background: var(--green); color: #fff; }
+    .badge.fail { background: var(--red); color: #fff; }
+    .badge.unknown { background: #3a3f4b; color: var(--muted); }
+    .ts { font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+          color: var(--muted); white-space: nowrap; }
+    .name { font-weight: 600; }
+    .sub { color: var(--muted); font-size: 12px; }
+    .actions { display: flex; gap: 8px; white-space: nowrap; }
+    .actions button { background: var(--panel); color: var(--text);
+      border: 1px solid var(--line); padding: 6px 10px; border-radius: 6px;
+      cursor: pointer; font-size: 12px; }
+    .actions button:hover:not(:disabled) { border-color: var(--accent); }
+    .actions button:disabled { opacity: .45; cursor: not-allowed; }
+    .empty { color: var(--muted); padding: 40px; text-align: center; }
+    .hidden { display: none; }
+    code { color: #c7d2fe; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>drone-check</h1>
+    <nav>
+      <a href="/">Live</a>
+      <a href="/logs" class="active">Logs</a>
+    </nav>
+    <span class="count" id="count"></span>
+  </header>
+
+  <main>
+    <div class="filters">
+      <input type="search" id="q" placeholder="Suche: Pilot, Craft, UID, Version, Ordner…" />
+      <select id="verdict">
+        <option value="all">Alle Ergebnisse</option>
+        <option value="pass">Bestanden (PASS)</option>
+        <option value="fail">Durchgefallen (FAIL)</option>
+        <option value="unknown">Ohne Ergebnis</option>
+      </select>
+      <select id="variant"><option value="all">Alle Firmware</option></select>
+      <button id="refresh">Aktualisieren</button>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Ergebnis</th><th>Zeitpunkt</th><th>Pilot / Craft</th>
+          <th>Firmware</th><th>Hash</th><th></th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty hidden" id="empty">Keine Logs gefunden.</div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let CAPTURES = [];
+
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+    function verdictKind(c) {
+      if (c.verdict === true) return "pass";
+      if (c.verdict === false) return "fail";
+      return "unknown";
+    }
+    function verdictBadge(c) {
+      const k = verdictKind(c);
+      const txt = k === "pass" ? "PASS" : k === "fail" ? "FAIL" : "—";
+      return `<span class="badge ${k}">${txt}</span>`;
+    }
+
+    function matches(c) {
+      const term = $("q").value.trim().toLowerCase();
+      if (term) {
+        const hay = [c.pilot_name, c.craft_name, c.uid,
+          c.firmware && c.firmware.version, c.id]
+          .map((x) => (x || "").toLowerCase()).join(" ");
+        if (!hay.includes(term)) return false;
+      }
+      const v = $("verdict").value;
+      if (v !== "all" && verdictKind(c) !== v) return false;
+      const fv = $("variant").value;
+      if (fv !== "all" && (c.firmware && c.firmware.variant) !== fv) return false;
+      return true;
+    }
+
+    function row(c) {
+      const fw = c.firmware || {};
+      const fwTxt = [fw.variant, fw.version].filter(Boolean).join(" ") || "—";
+      const git = fw.git_hash ? `<div class="sub"><code>${esc(fw.git_hash)}</code></div>` : "";
+      const hash = c.firmware_hash_approved === true ? "✓ approved"
+        : c.firmware_hash_approved === false ? "✗ not approved" : "—";
+      const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
+      const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
+      const cfgBtn = c.has_dump
+        ? `<button title="Phase 2 — bald verfügbar" disabled>Im Configurator</button>` : "";
+      return `<tr>
+        <td>${verdictBadge(c)}</td>
+        <td class="ts">${esc(c.captured_at || c.id)}</td>
+        <td><div class="name">${esc(c.pilot_name || "—")} / ${esc(c.craft_name || "—")}</div>
+            <div class="sub">${esc(c.uid || "")}${warn}</div></td>
+        <td>${esc(fwTxt)}${git}</td>
+        <td>${hash}${hashSrc}</td>
+        <td><div class="actions">
+          <button data-open="${esc(c.id)}">Ordner öffnen</button>${cfgBtn}
+        </div></td>
+      </tr>`;
+    }
+
+    function render() {
+      const shown = CAPTURES.filter(matches);
+      $("rows").innerHTML = shown.map(row).join("");
+      $("empty").classList.toggle("hidden", shown.length > 0);
+      $("count").textContent = `${shown.length} / ${CAPTURES.length} Logs`;
+      $("rows").querySelectorAll("button[data-open]").forEach((b) => {
+        b.onclick = () => openFolder(b.getAttribute("data-open"), b);
+      });
+    }
+
+    function fillVariants() {
+      const variants = [...new Set(CAPTURES
+        .map((c) => c.firmware && c.firmware.variant).filter(Boolean))].sort();
+      const sel = $("variant");
+      sel.innerHTML = '<option value="all">Alle Firmware</option>'
+        + variants.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
+    }
+
+    async function openFolder(id, btn) {
+      btn.disabled = true;
+      try {
+        const r = await fetch(`/api/captures/${encodeURIComponent(id)}/open-folder`, { method: "POST" });
+        if (!r.ok) { const d = await r.json().catch(() => ({})); alert("Konnte Ordner nicht öffnen: " + (d.reason || r.status)); }
+      } finally { btn.disabled = false; }
+    }
+
+    async function load() {
+      const r = await fetch("/api/captures");
+      const data = await r.json().catch(() => ({ captures: [] }));
+      CAPTURES = data.captures || [];
+      fillVariants();
+      render();
+    }
+
+    $("q").addEventListener("input", render);
+    $("verdict").addEventListener("change", render);
+    $("variant").addEventListener("change", render);
+    $("refresh").onclick = load;
+    load();
+  </script>
+</body>
+</html>
