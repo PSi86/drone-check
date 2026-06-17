@@ -13,8 +13,17 @@ import yaml
 class Settings:
     log_dir: Path = Path("logs")
     serial_baudrate: int = 115200
-    ask_pilot_name: bool = True
     poll_interval: float = 1.0
+
+    # Capture folder name template. Placeholders: {timestamp} {pilot_name}
+    # {craft_name} {uid} {variant} {version}. Names come from the FC.
+    folder_template: str = "{timestamp}_{pilot_name}_{craft_name}"
+
+    # Manual pilot entry is OFF by default — the pilot name is read from the FC
+    # and logs are never edited. When enabled, the operator may supply a
+    # *fallback* pilot name used only for the folder label (never written into
+    # the captured data files).
+    allow_manual_pilot: bool = False
 
     # Serial / CLI timing (tunable for slow or finicky links).
     connect_delay: float = 0.3
@@ -59,8 +68,9 @@ def load_settings(path: Path) -> Settings:
     if "log_dir" in data:
         s.log_dir = Path(data["log_dir"])
     s.serial_baudrate = int(data.get("serial_baudrate", s.serial_baudrate))
-    s.ask_pilot_name = bool(data.get("ask_pilot_name", s.ask_pilot_name))
     s.poll_interval = float(data.get("poll_interval", s.poll_interval))
+    s.folder_template = str(data.get("folder_template", s.folder_template))
+    s.allow_manual_pilot = bool(data.get("allow_manual_pilot", s.allow_manual_pilot))
     s.connect_delay = float(data.get("connect_delay", s.connect_delay))
     s.cli_idle_timeout = float(data.get("cli_idle_timeout", s.cli_idle_timeout))
     s.cli_max_wait = float(data.get("cli_max_wait", s.cli_max_wait))

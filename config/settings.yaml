@@ -1,14 +1,21 @@
 # drone-check runtime settings
 
-# Where capture folders are written (organised as <pilot>/<fc_serial>/<timestamp>).
+# Where capture folders are written.
 log_dir: logs
+
+# Capture folder name. Each capture is written once and never modified or moved.
+# Placeholders: {timestamp} {pilot_name} {craft_name} {uid} {variant} {version}.
+# pilot_name and craft_name are read from the flight controller.
+folder_template: "{timestamp}_{pilot_name}_{craft_name}"
+
+# Manual pilot entry. OFF by default: the pilot name comes from the FC and the
+# captured data files are never edited. When true, the operator may supply a
+# fallback pilot name used ONLY for the folder label when the FC reports none.
+allow_manual_pilot: false
 
 # USB CDC virtual serial: the baud rate is nominal and largely ignored, but some
 # drivers want a sane value.
 serial_baudrate: 115200
-
-# Ask the operator for a pilot name when a drone is detected.
-ask_pilot_name: true
 
 # Seconds between USB hot-plug polls.
 poll_interval: 1.0

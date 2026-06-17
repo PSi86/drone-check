@@ -45,6 +45,8 @@ vtx 1 2 0 0 2 1300 1700
 vtx 2 2 0 0 3 1800 2100
 
 # master
+set craft_name = TESTQUAD
+set pilot_name = MAX POWER
 set vtx_band = 5
 set vtx_channel = 1
 set vtx_power = 1
@@ -69,7 +71,14 @@ INAV_DUMP = """\
 
 # resources
 
+# vtxtable
+vtxtable powerlevels 5
+vtxtable powervalues 25 100 200 400 600
+vtxtable powerlabels 25 100 200 400 600
+
 # master
+set name = WINGONE
+set pilot_name = ANNA
 set vtx_band = 5
 set vtx_channel = 1
 set vtx_power = 1
@@ -108,6 +117,7 @@ def betaflight_profile() -> FcProfile:
         build_time="12:34:56",
         git_hash="77d01ba3b",
         uid="0041002f3530510835353036",
+        vtx_type=4,  # IRC Tramp (mW values)
     )
     return FcProfile(
         identity=ident,
@@ -140,8 +150,112 @@ def inav_profile() -> FcProfile:
     )
 
 
+# A SmartAudio 2.1 drone whose OSD labels LIE: every level is labelled "25"
+# while the dBm values transmit 25 / 100 / 400 mW. vtx_power selects level 3
+# (26 dBm = ~400 mW) but the OSD shows "25". This is the classic power cheat.
+SMARTAUDIO_CHEAT_DUMP = """\
+# version
+# Betaflight / STM32F405 (S405) 4.5.1 Dec 19 2024 / 12:34:56 (77d01ba3b) MSP API: 1.46
+
+# start the command batch
+batch start
+
+board_name HBFCS405
+
+# vtxtable
+vtxtable bands 6
+vtxtable channels 8
+vtxtable powervalues 14 20 26
+vtxtable powerlabels 25 25 25
+
+# master
+set craft_name = RACER
+set pilot_name = SNEAKY
+set vtx_band = 5
+set vtx_channel = 1
+set vtx_power = 3
+set vtx_low_power_disarm = OFF
+
+# end the command batch
+batch end
+"""
+
+
+def smartaudio_cheat_profile() -> FcProfile:
+    ident = MspIdentity(
+        api_version="1.46",
+        variant="BTFL",
+        version="4.5.1",
+        board_name="HBFCS405",
+        build_date="Dec 19 2024",
+        build_time="12:34:56",
+        git_hash="77d01ba3b",
+        uid="00410033511239363330303b",
+        vtx_type=3,  # SmartAudio (dBm values)
+    )
+    return FcProfile(
+        identity=ident,
+        cli_outputs={
+            "version": SMARTAUDIO_CHEAT_DUMP.splitlines()[1],
+            "dump all": SMARTAUDIO_CHEAT_DUMP,
+            "status": "",
+        },
+    )
+
+
+# A SmartAudio V2.0 drone: powervalues are opaque indices (0 1 2 3). The real
+# power lives only in the device + the (manipulable) labels, so it cannot be
+# verified from the FC config — the tool must say so instead of trusting "25".
+SMARTAUDIO_INDEX_DUMP = """\
+# version
+# Betaflight / STM32F405 (S405) 4.5.1 Dec 19 2024 / 12:34:56 (77d01ba3b) MSP API: 1.46
+
+batch start
+board_name HBFCS405
+
+# vtxtable
+vtxtable powervalues 0 1 2 3
+vtxtable powerlabels 25 200 500 800
+
+# master
+set craft_name = OLDQUAD
+set pilot_name = LEGACY
+set vtx_power = 1
+set vtx_low_power_disarm = ON
+
+batch end
+"""
+
+
+def smartaudio_index_profile() -> FcProfile:
+    ident = MspIdentity(
+        api_version="1.46",
+        variant="BTFL",
+        version="4.5.1",
+        board_name="HBFCS405",
+        build_date="Dec 19 2024",
+        build_time="12:34:56",
+        git_hash="77d01ba3b",
+        uid="00410034511239363330303c",
+        vtx_type=3,  # SmartAudio, but V2.0 index-based table
+    )
+    return FcProfile(
+        identity=ident,
+        cli_outputs={
+            "version": SMARTAUDIO_INDEX_DUMP.splitlines()[1],
+            "dump all": SMARTAUDIO_INDEX_DUMP,
+            "status": "",
+        },
+    )
+
+
 def demo_profiles() -> list[FcProfile]:
-    return [betaflight_profile(), inav_profile()]
+    return [
+        betaflight_profile(),
+        inav_profile(),
+        smartaudio_cheat_profile(),
+        smartaudio_index_profile(),
+    ]
 
 
 def seed_allowlist(allowlist: dict) -> None:

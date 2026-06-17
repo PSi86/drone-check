@@ -24,7 +24,12 @@ MSP_FC_VARIANT = 2
 MSP_FC_VERSION = 3
 MSP_BOARD_INFO = 4
 MSP_BUILD_INFO = 5
+MSP_VTX_CONFIG = 88
 MSP_UID = 160
+
+# vtxDevType_e (src/main/drivers/vtx_common.h)
+VTX_DEVICE_NAMES = {1: "RTC6705", 3: "SmartAudio", 4: "Tramp", 5: "MSP"}
+VTX_DEVICE_UNKNOWN = 0xFF
 
 
 class MspError(Exception):
@@ -41,6 +46,8 @@ class MspIdentity:
     build_time: str = ""
     git_hash: str = ""
     uid: str = ""
+    # vtxDevType_e from MSP_VTX_CONFIG (0xFF = unknown / not present).
+    vtx_type: int = VTX_DEVICE_UNKNOWN
 
 
 def _is_printable(data: bytes) -> bool:
@@ -165,6 +172,22 @@ class MspClient:
         git = p[19:26].decode("ascii", "replace").strip("\x00").strip()
         return date, clock, git
 
+    def vtx_config(self) -> dict:
+        """Read MSP_VTX_CONFIG. The leading byte is the vtx device type.
+
+        The tail layout varies across API versions, so only the well-established
+        leading fields are decoded.
+        """
+        p = self._request(MSP_VTX_CONFIG)
+        out: dict = {"type": VTX_DEVICE_UNKNOWN}
+        if len(p) >= 1:
+            out["type"] = p[0]
+        if len(p) >= 4:
+            out["band"], out["channel"], out["power_index"] = p[1], p[2], p[3]
+        if len(p) >= 7:
+            out["frequency"] = int.from_bytes(p[5:7], "little")
+        return out
+
     def uid(self) -> str:
         p = self._request(MSP_UID)
         if len(p) < 12:
@@ -189,4 +212,10 @@ class MspClient:
         ident.uid = self.uid()
         if not ident.uid:
             raise MspError("flight controller did not report a UID")
+        # VTX device type is best-effort: absent on boards without a VTX or on
+        # older API versions, and must never abort identification.
+        try:
+            ident.vtx_type = self.vtx_config().get("type", VTX_DEVICE_UNKNOWN)
+        except MspError:
+            ident.vtx_type = VTX_DEVICE_UNKNOWN
         return ident

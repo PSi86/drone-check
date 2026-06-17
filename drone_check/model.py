@@ -54,13 +54,46 @@ class VtxSwitch:
 
 
 @dataclass
+class VtxPowerLevel:
+    """One ``vtxtable`` power level, with the real power decoded from its value.
+
+    ``raw_value`` is the number sent to the VTX (dBm for SmartAudio 2.1, mW for
+    IRC Tramp). ``real_mw`` is the decoded true output power. ``label`` is the
+    free-form OSD string and ``label_mw`` its parsed mW claim. ``understated`` is
+    True when the OSD label claims meaningfully less than the real power — the
+    classic "show 25 mW while transmitting more" manipulation.
+    """
+
+    index: int  # 1-based vtxtable index
+    raw_value: int
+    # Real output power in mW; None when it cannot be derived from the value
+    # (SmartAudio V1/V2 index-based tables — the value is an opaque index).
+    real_mw: Optional[int] = None
+    label: str = ""
+    label_mw: Optional[int] = None
+    understated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class VtxConfig:
     """Normalised VTX configuration relevant to power inspection."""
 
-    # index -> milliwatt, resolved from `vtxtable powervalues` when present.
-    power_table: dict[int, int] = field(default_factory=dict)
+    # index -> real output power in milliwatt (dBm-decoded where applicable).
+    # Values are None for index-based tables where mW cannot be derived.
+    power_table: dict[int, Optional[int]] = field(default_factory=dict)
     # How power_table was resolved: "vtxtable" or "default-fallback".
     power_table_source: str = "unknown"
+    # VTX device type from MSP_VTX_CONFIG: "SmartAudio"/"Tramp"/"RTC6705"/"MSP"/"unknown".
+    device_type: str = "unknown"
+    # How the FC encodes powervalues: "dbm" (SA 2.1) | "mw" (Tramp) |
+    # "index" (SA V1/V2, opaque) | "unknown".
+    power_unit: str = "mw"
+    # True only when the real power can be derived from the FC config (dbm/mw).
+    # False for index-based tables — the real power then cannot be verified.
+    power_verifiable: bool = True
 
     low_power_disarm: str = "OFF"  # OFF | ON | UNTIL_FIRST_ARM
     power_global_index: Optional[int] = None
@@ -71,6 +104,11 @@ class VtxConfig:
     power_armed_max_mw: Optional[int] = None
     # Effective power (mW) while disarmed.
     power_disarmed_mw: Optional[int] = None
+
+    # Per-level decode + OSD-label honesty check.
+    levels: list[VtxPowerLevel] = field(default_factory=list)
+    # True if ANY level's OSD label understates the real power (manipulation).
+    osd_power_mismatch: bool = False
 
     switches: list[VtxSwitch] = field(default_factory=list)
     # AUX channels (zero-based) that can toggle VTX PIT mode, best-effort.
@@ -120,14 +158,19 @@ class DroneSnapshot:
     """Everything captured and derived for one flight controller."""
 
     captured_at: str = ""  # ISO-8601 timestamp, injected by the caller
-    pilot: str = ""
     # 96-bit MCU unique id as hex, used as the flight-controller serial.
     uid: str = ""
+
+    # Identity read from the flight controller itself — the single source of
+    # truth. `pilot_name`/`craft_name` (Betaflight >= 4.3, INAV); on older
+    # Betaflight these come from `display_name`/`name`, on INAV craft is `name`.
+    pilot_name: str = ""
+    craft_name: str = ""
 
     firmware: FirmwareInfo = field(default_factory=FirmwareInfo)
     vtx: VtxConfig = field(default_factory=VtxConfig)
 
-    # Flat `set name = value` map from `diff all` / `dump`.
+    # Flat `set name = value` map from the `dump` output.
     settings: dict[str, str] = field(default_factory=dict)
     # Raw text of each captured CLI command, keyed by command.
     raw_cli: dict[str, str] = field(default_factory=dict)
@@ -139,8 +182,9 @@ class DroneSnapshot:
     def to_dict(self) -> dict[str, Any]:
         return {
             "captured_at": self.captured_at,
-            "pilot": self.pilot,
             "uid": self.uid,
+            "pilot_name": self.pilot_name,
+            "craft_name": self.craft_name,
             "firmware": self.firmware.to_dict(),
             "vtx": self.vtx.to_dict(),
             "settings": self.settings,
@@ -152,13 +196,14 @@ class DroneSnapshot:
         """Build the activation object exposed to CEL rules.
 
         Exposed bindings:
-          * ``drone``  – firmware + normalised vtx + raw settings
+          * ``drone``  – firmware + normalised vtx + raw settings + names
           * ``checks`` – pre-computed boolean check results
         """
         return {
             "drone": {
-                "pilot": self.pilot,
                 "uid": self.uid,
+                "pilot_name": self.pilot_name,
+                "craft_name": self.craft_name,
                 "firmware": self.firmware.to_dict(),
                 "vtx": self.vtx.to_dict(),
                 "settings": self.settings,

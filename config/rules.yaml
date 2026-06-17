@@ -2,28 +2,43 @@
 #
 # Available bindings:
 #   drone.firmware.{variant,firmware_name,version,target,board_name,git_hash,...}
-#   drone.vtx.{power_armed_max_mw,power_disarmed_mw,low_power_disarm,
-#              power_global_mw,switches[].{aux_channel,power_index,reachable_mw[]}}
+#   drone.vtx.{device_type,power_unit,power_verifiable,power_armed_max_mw,
+#              power_disarmed_mw,low_power_disarm,power_global_mw,osd_power_mismatch,
+#              levels[].{index,raw_value,real_mw,label,label_mw,understated},
+#              switches[].{aux_channel,power_index,reachable_mw[]}}
 #   drone.settings["<cli_setting_name>"]   (raw string values)
 #   checks.firmware_hash_approved          (bool)
 #
 # A drone passes only if every rule with severity "critical" passes.
+# Note: power_verifiable is false for SmartAudio V1/V2 index-based tables, where
+# the real mW cannot be derived from the FC config — the power-limit rules then
+# defer to vtx-power-verifiable rather than trusting a (manipulable) label.
 
 rules:
+  - id: vtx-power-verifiable
+    description: "Real VTX power must be derivable from the FC (dBm or mW table, not an opaque index)"
+    severity: critical
+    expr: 'drone.vtx.power_verifiable'
+
   - id: vtx-power-disarmed-max
     description: "VTX power while disarmed must not exceed 25 mW"
     severity: critical
-    expr: 'drone.vtx.power_disarmed_mw <= 25'
+    expr: '!drone.vtx.power_verifiable || drone.vtx.power_disarmed_mw <= 25'
 
   - id: vtx-power-armed-max
     description: "VTX power while armed must not exceed 25 mW"
     severity: critical
-    expr: 'drone.vtx.power_armed_max_mw <= 25'
+    expr: '!drone.vtx.power_verifiable || drone.vtx.power_armed_max_mw <= 25'
 
   - id: vtx-no-switch-exceeds-25
     description: "No radio switch position may select more than 25 mW"
     severity: critical
     expr: 'drone.vtx.switches.all(s, s.reachable_mw.all(p, p <= 25))'
+
+  - id: vtx-osd-power-honest
+    description: "OSD power label must not understate the real power sent to the VTX (anti-cheat)"
+    severity: critical
+    expr: 'drone.vtx.osd_power_mismatch == false'
 
   - id: firmware-hash-approved
     description: "Firmware git hash must be approved (allowlist or official repo)"

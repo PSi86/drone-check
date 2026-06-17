@@ -7,7 +7,7 @@ parser/VTX layers. It does not perform I/O itself.
 from __future__ import annotations
 
 from .model import DroneSnapshot, FirmwareInfo
-from .msp import MspIdentity
+from .msp import VTX_DEVICE_NAMES, MspIdentity
 from .parser import parse_diff, parse_version_line
 from .vtx import normalise_vtx
 
@@ -77,5 +77,16 @@ def build_snapshot(
         snap.firmware.manufacturer_id = cfg.manufacturer_id
 
     snap.settings = cfg.settings
-    snap.vtx = normalise_vtx(cfg, snap.firmware.variant)
+    device_type = VTX_DEVICE_NAMES.get(ident.vtx_type, "unknown")
+    snap.vtx = normalise_vtx(cfg, snap.firmware.variant, device_type)
+
+    # Names from the flight controller (the single source of truth):
+    #   Betaflight >= 4.3 / INAV: pilot_name; older Betaflight: display_name.
+    #   Craft: Betaflight >= 4.3: craft_name; older BF / INAV: name.
+    snap.pilot_name = (
+        cfg.settings.get("pilot_name") or cfg.settings.get("display_name") or ""
+    ).strip()
+    snap.craft_name = (
+        cfg.settings.get("craft_name") or cfg.settings.get("name") or ""
+    ).strip()
     return snap

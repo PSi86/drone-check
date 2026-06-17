@@ -119,24 +119,18 @@ def cmd_probe(args: argparse.Namespace) -> int:
 def cmd_inspect(args: argparse.Namespace) -> int:
     config = load_config(args.config)
 
-    def ask_pilot(ctx: dict) -> str:
-        if not config.settings.ask_pilot_name:
-            return ""
-        try:
-            return input("Pilot name (optional): ").strip()
-        except EOFError:
-            return ""
-
     def emit(evt: dict) -> None:
         if evt.get("type") == "step":
             print(f"  [{evt.get('status','')}] {evt.get('step')}", file=sys.stderr)
         elif evt.get("type") == "error":
             print(f"  ERROR: {evt.get('message')}", file=sys.stderr)
 
-    orch = Orchestrator(config, emit=emit, ask_pilot=ask_pilot)
+    orch = Orchestrator(config, emit=emit)
     fc = _open_fc(args, config.settings)
     try:
-        snapshot, evaluation, out = orch.process(fc)
+        # The pilot/craft names come from the FC; --pilot is only a folder-label
+        # fallback used when the FC reports no pilot name.
+        snapshot, evaluation, out = orch.process(fc, pilot_fallback=args.pilot or "")
     finally:
         fc.close()
     print(render_report(snapshot, evaluation))
@@ -150,7 +144,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     config = copy.deepcopy(load_config(args.config))
     seed_allowlist(config.allowlist)
 
-    orch = Orchestrator(config, emit=lambda e: None, ask_pilot=lambda ctx: "Demo Pilot")
+    orch = Orchestrator(config, emit=lambda e: None)
     any_fail = False
     for profile in demo_profiles():
         snapshot, evaluation, out = orch.process(FakeFlightController(profile))
@@ -190,6 +184,9 @@ def main(argv: list[str] | None = None) -> int:
 
     p_inspect = sub.add_parser("inspect", help="full capture + evaluation")
     _add_serial_args(p_inspect)
+    p_inspect.add_argument(
+        "--pilot", default="", help="fallback pilot name for the folder label (FC value wins)"
+    )
     p_inspect.set_defaults(func=cmd_inspect)
 
     p_demo = sub.add_parser("demo", help="run against built-in sample drones")

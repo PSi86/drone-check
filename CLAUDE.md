@@ -1,0 +1,78 @@
+# drone-check — guide for AI sessions
+
+## Primary purpose (read this first)
+
+drone-check has **two goals of equal weight**:
+
+1. **Document** a drone's flight-controller firmware and *all* settings faithfully.
+2. **Detect impermissible manipulations / cheating** — configurations crafted to
+   misrepresent reality at a race or tech inspection (e.g. show "25 mW" on the
+   OSD while the VTX actually transmits 400 mW).
+
+This is an inspection / anti-cheat tool. "Faithful documentation" and "catching
+deception" are the point — not pilot convenience.
+
+## Your standing mandate as the AI working on this project
+
+You are expected to **actively find weaknesses and build the checks yourself** —
+not just implement what is literally requested:
+
+- **Hunt for manipulation vectors.** Wherever a *displayed or claimed* value can
+  diverge from the *real configured* value, treat it as a threat to detect. The
+  VTX power case (below) is the template: the OSD label is free text while the
+  real power is encoded in another field.
+- **When you find one, implement the full check** — don't just describe it:
+  decode the real value in the parser/normaliser, add a CEL rule in
+  `config/rules.yaml`, surface it in the report/snapshot, and add tests plus a
+  demo profile that exercises both the honest and the cheating case.
+- **Prefer "cannot verify" over trusting a manipulable field.** If the real
+  value can't be derived from the FC config (e.g. SmartAudio V1/V2 index tables),
+  mark it `power_verifiable = false` and fail closed rather than trusting a label.
+- **Ground semantics in authoritative sources** (Betaflight / INAV docs and
+  source, protocol specs) before implementing — encodings vary by firmware
+  version and VTX protocol.
+
+## Threat-model example already handled (use as a pattern)
+
+VTX output power:
+- `vtxtable powervalues` are **dBm** (SmartAudio 2.1), **mW** (IRC Tramp), or
+  opaque **indices** (SmartAudio V1/V2). `vtxtable powerlabels` are free-form OSD
+  strings — a 400 mW level can be labelled "25".
+- We decode the **real** power from the value (dBm→mW), flag any level whose
+  label understates it (`osd_power_mismatch`), and mark index-based tables as not
+  verifiable. The VTX device type comes from MSP (`MSP_VTX_CONFIG`), which is not
+  in the text dump.
+
+Other realised checks: armed/disarmed VTX power ≤ limit incl. all switch
+positions (worst case), switch-controlled power detection (Betaflight `vtx`
+lines / INAV programming `logic` op 25), firmware-hash allowlist + GitHub.
+
+## Architecture map (where checks live)
+
+- `parser.py` — CLI `dump all` → structured config.
+- `vtx.py` — decode real VTX power, detect inconsistencies. New value-decoding /
+  anti-manipulation logic usually goes here or in a sibling normaliser.
+- `model.py` — `DroneSnapshot` / `VtxConfig` (the data rules evaluate).
+- `config/rules.yaml` — **the checks**, as CEL expressions (`critical` fails the
+  drone; `warning` is informational). This is where most new checks land.
+- `storage.py` — immutable per-capture folder + `report.txt`.
+- `firmware.py` — firmware-hash verification; `scripts/update_allowlist.py`.
+- `demo.py` / `tests/` — sample drones (honest + cheating) and the test suite.
+
+## Hard invariants (do not break)
+
+- **Logs are immutable**: written once, never modified or moved; they contain
+  only real data read from the flight controller.
+- **Identity comes from the FC**: `pilot_name` / `craft_name` are read from the
+  drone, never from operator input (manual entry is an optional folder-label
+  fallback only, off by default).
+- Capture must **never block on operator input**.
+- English for code, comments, commits, and docs; chat with the user in German.
+- No AI self-attribution anywhere (commits, PRs, comments).
+
+## Workflow
+
+- `pytest` must stay green; add tests for every new check (pass + fail cases).
+- `drone-check demo` runs the pipeline against built-in sample drones (no HW).
+- `drone-check serve` is the local web UI + USB hot-plug watcher.
+- See `README.md` for usage and `HARDWARE_TEST.md` for real-hardware bring-up.

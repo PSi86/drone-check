@@ -8,20 +8,30 @@ When a flight controller is plugged in over USB the tool:
 1. **Identifies** it over **MSP** (binary): FC variant, firmware version, build
    info (incl. short git hash) and the 96-bit MCU unique id used as the
    *flight-controller serial*.
-2. Asks the operator for the **pilot name** (optional).
-3. Drops into the text **CLI** and captures the full configuration
+2. Drops into the text **CLI** and captures the full configuration
    (`version`, `dump all`, `status`), checking each response for completeness,
    then exits cleanly so the FC reboots. `dump all` is used because it lists
    every setting with its absolute value — rule evaluation never has to guess a
    firmware default. (`diff all` is optional; add it to `cli_commands` if you
    also want the portable human-readable backup stored.)
-4. **Normalises** the data — in particular the VTX power configuration
+3. **Normalises** the data — in particular the VTX power configuration
    (armed / disarmed power and the radio switches that select it).
-5. **Verifies the firmware hash** against a local allowlist and/or the official
+4. **Verifies the firmware hash** against a local allowlist and/or the official
    firmware GitHub repository.
-6. **Evaluates rules** written in [CEL](https://cel.dev) and shows a green/red
+5. **Evaluates rules** written in [CEL](https://cel.dev) and shows a green/red
    verdict with the reasons.
-7. **Logs** everything under `logs/<pilot>/<fc_serial>/<timestamp>/`.
+6. **Logs** everything into its own folder, by default
+   `logs/<timestamp>_<pilot_name>_<craft_name>/`.
+
+The capture never waits on operator input and **logs are written once and never
+modified or moved** — they contain only the real data read from the flight
+controller. The **pilot and craft names come from the FC** (`pilot_name` /
+`craft_name`), which are the single source of truth and also name the folder.
+
+Manual entry is **off by default**. Enable `allow_manual_pilot` to let the
+operator set a *fallback* pilot name that is used only for the folder label when
+the FC reports none — it never alters the captured data files. The folder naming
+is configurable via `folder_template`.
 
 ## Requirements
 
@@ -86,18 +96,20 @@ drone-check demo
 Serial flags for `probe` / `inspect`: `--baud N`, `--connect-delay S`,
 `--debug` (tee raw traffic to `./debug/<port>-<time>.log`). Global: `--config DIR`.
 
-The everyday workflow is `drone-check serve`: open the page, plug a drone in,
-enter the pilot name, read the green/red verdict, unplug, repeat.
+The everyday workflow is `drone-check serve`: open the page, plug a drone in —
+it is read automatically and a green/red verdict appears; the pilot and craft
+names come from the drone. Unplug and repeat.
 
 For the first run against real hardware, follow [HARDWARE_TEST.md](HARDWARE_TEST.md).
 
 ## Output
 
-Every capture is written to:
+Every capture is written once into its own immutable folder (default template
+`{timestamp}_{pilot_name}_{craft_name}`):
 
 ```
-logs/<pilot>/<fc_serial>/<timestamp>/
-    snapshot.json      normalised firmware + VTX + all settings
+logs/<timestamp>_<pilot_name>_<craft_name>/
+    snapshot.json      normalised firmware + VTX + names + all settings
     evaluation.json    rule results + overall verdict
     report.txt         human-readable summary
     raw/<command>.txt  raw output of each captured CLI command
@@ -109,13 +121,14 @@ All config lives in `config/`:
 
 | File | Purpose |
 |------|---------|
-| `settings.yaml` | log dir, baud rate, CLI commands, hash-check toggles |
+| `settings.yaml` | log dir, folder template, manual-pilot toggle, baud rate, CLI commands, hash-check toggles |
 | `rules.yaml` | CEL rules; a drone passes only if every `critical` rule passes |
 | `firmware_allowlist.yaml` | approved git hashes per variant + version |
 
 ### Rule bindings (CEL)
 
 ```
+drone.pilot_name, drone.craft_name           (read from the FC)
 drone.firmware.{variant,version,target,git_hash,...}
 drone.vtx.{power_armed_max_mw,power_disarmed_mw,low_power_disarm,
            switches[].{aux_channel,power_index,reachable_mw[]}}
@@ -148,6 +161,31 @@ setting.
 Because the live switch position is unknown on the bench, the reported **armed**
 power is the maximum any switch position can select (a dynamically driven level
 is treated as reaching the whole table) — no position may exceed the limit.
+
+### Real power vs. the OSD label (anti-cheat)
+
+`vtxtable powervalues` are the numbers sent to the VTX; their unit depends on the
+protocol, while `vtxtable powerlabels` are free-form OSD strings that can be set
+to anything. A cheater can label a 400 mW level "25" to read 25 mW on the OSD
+while transmitting 400 mW. drone-check decodes the **real** power from the value
+and flags any level whose label understates it (`osd_power_mismatch`).
+
+The encoding is determined by the VTX **device type** (from MSP `MSP_VTX_CONFIG`:
+`SmartAudio` / `Tramp` / `RTC6705` / `MSP`) plus the value pattern:
+
+| Protocol | `powervalues` | Verifiable? |
+|----------|---------------|-------------|
+| IRC Tramp | milliwatts (25 100 200 400 600) | yes |
+| SmartAudio **2.1** | dBm (14 20 26 36 → 25/100/400/4000 mW) | yes |
+| SmartAudio **V1/V2** | opaque power **indices** (0 1 2 3) | **no** |
+| RTC6705 | milliwatts | yes |
+
+The exact VTX type comes from MSP; it is **not** in the text dump. The SmartAudio
+sub-version is not exposed by the FC at all, so it is inferred from the value
+encoding. For **index-based** tables (SmartAudio V1/V2) the real mW lives only in
+the device and the manipulable label, so it **cannot be verified** from the FC —
+drone-check marks such captures `power_verifiable: false` and fails the
+`vtx-power-verifiable` rule rather than trusting the label.
 
 ## Firmware allowlist
 

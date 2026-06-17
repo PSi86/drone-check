@@ -2,23 +2,27 @@
 
 A background worker thread watches for USB hot-plug events, runs the orchestrator
 against the connected flight controller, and streams structured events to all
-connected browsers over a WebSocket. The operator enters the pilot name in the
-browser; that value is handed back to the worker thread.
+connected browsers over a WebSocket.
+
+The captured logs are never modified or moved: the pilot/craft names come from
+the flight controller. When manual entry is enabled in config the operator can
+set a *fallback* pilot name, used only for the folder label of subsequent
+captures when the FC reports none.
 """
 
 from __future__ import annotations
 
 import asyncio
-import queue
 import threading
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from .config import AppConfig
-from .flightcontroller import FakeFlightController, FcProfile, RealFlightController
+from .flightcontroller import FakeFlightController, RealFlightController
 from .orchestrator import Orchestrator
 from . import serialwatch
 
@@ -32,7 +36,9 @@ class Hub:
         self._loop = loop
         self._clients: set[WebSocket] = set()
         self._history: list[dict] = []
-        self._pilot_waits: dict[str, "queue.Queue[str]"] = {}
+        self._lock = threading.Lock()
+        # Operator-supplied fallback pilot name (folder label only).
+        self._operator_pilot: str = ""
 
     # -- event fan-out (worker thread -> browsers) ------------------------
 
@@ -61,51 +67,36 @@ class Hub:
     def unregister(self, ws: WebSocket) -> None:
         self._clients.discard(ws)
 
-    # -- pilot-name round trip (worker thread <- browser) -----------------
+    # -- operator fallback pilot (folder label only) ----------------------
 
-    def ask_pilot(self, ctx: dict) -> str:
-        """Called in the worker thread; blocks until the browser provides a name."""
-        uid = ctx.get("uid", "")
-        q: "queue.Queue[str]" = queue.Queue(maxsize=1)
-        self._pilot_waits[uid] = q
-        try:
-            return q.get(timeout=300)
-        except queue.Empty:
-            return ""
-        finally:
-            self._pilot_waits.pop(uid, None)
+    @property
+    def operator_pilot(self) -> str:
+        with self._lock:
+            return self._operator_pilot
 
-    def provide_pilot(self, uid: str, name: str) -> bool:
-        q = self._pilot_waits.get(uid)
-        if q is None:
-            return False
-        try:
-            q.put_nowait(name)
-            return True
-        except queue.Full:
-            return False
+    def set_operator_pilot(self, name: str) -> None:
+        with self._lock:
+            self._operator_pilot = (name or "").strip()
 
 
 def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
-    app = FastAPI(title="drone-check")
     hub: Hub | None = None
     stop_flag = threading.Event()
 
-    @app.on_event("startup")
-    async def _startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
         nonlocal hub
         loop = asyncio.get_running_loop()
         hub = Hub(loop)
-        orchestrator = Orchestrator(config, emit=hub.emit, ask_pilot=hub.ask_pilot)
         if not demo:
-            t = threading.Thread(
+            orchestrator = Orchestrator(config, emit=hub.emit)
+            threading.Thread(
                 target=_worker, args=(config, orchestrator, hub, stop_flag), daemon=True
-            )
-            t.start()
-
-    @app.on_event("shutdown")
-    async def _shutdown() -> None:
+            ).start()
+        yield
         stop_flag.set()
+
+    app = FastAPI(title="drone-check", lifespan=lifespan)
 
     @app.get("/")
     async def index() -> HTMLResponse:
@@ -116,17 +107,29 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
         await ws.accept()
         assert hub is not None
         await hub.register(ws)
+        # Tell the client whether manual operator entry is allowed.
+        await ws.send_json(
+            {"type": "config", "allow_manual_pilot": config.settings.allow_manual_pilot}
+        )
         try:
             while True:
                 await ws.receive_text()  # keepalive; client sends pings
         except WebSocketDisconnect:
             hub.unregister(ws)
 
-    @app.post("/api/pilot")
-    async def set_pilot(payload: dict) -> JSONResponse:
+    @app.post("/api/operator-pilot")
+    async def set_operator_pilot(payload: dict) -> JSONResponse:
+        """Set the operator fallback pilot name (folder label only).
+
+        Has no effect unless ``allow_manual_pilot`` is enabled. It never touches
+        captured data files — only the folder name of future captures that have
+        no pilot name from the flight controller.
+        """
         assert hub is not None
-        ok = hub.provide_pilot(payload.get("uid", ""), payload.get("name", ""))
-        return JSONResponse({"ok": ok})
+        if not config.settings.allow_manual_pilot:
+            return JSONResponse({"ok": False, "reason": "manual pilot entry disabled"})
+        hub.set_operator_pilot(payload.get("name", ""))
+        return JSONResponse({"ok": True, "operator_pilot": hub.operator_pilot})
 
     @app.post("/api/demo")
     async def run_demo() -> JSONResponse:
@@ -139,14 +142,26 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
         # Use a config copy with demo hashes approved so the green path shows.
         demo_cfg = copy.deepcopy(config)
         seed_allowlist(demo_cfg.allowlist)
-        orchestrator = Orchestrator(demo_cfg, emit=hub.emit, ask_pilot=hub.ask_pilot)
+        orchestrator = Orchestrator(demo_cfg, emit=hub.emit)
 
         def _run() -> None:
-            for profile in demo_profiles():
-                hub.emit({"type": "detected", "port": "DEMO", "variant": profile.identity.variant})
+            for i, profile in enumerate(demo_profiles()):
+                # Pause between demo drones so the previous verdict stays on
+                # screen before the next capture resets the panel.
+                if i:
+                    time.sleep(3.0)
+                ident = profile.identity
+                hub.emit(
+                    {
+                        "type": "detected",
+                        "port": "DEMO",
+                        "description": f"{ident.variant} {ident.version}",
+                    }
+                )
+                fallback = hub.operator_pilot if config.settings.allow_manual_pilot else ""
                 try:
                     fc = FakeFlightController(profile)
-                    orchestrator.process(fc)
+                    orchestrator.process(fc, pilot_fallback=fallback)
                 except Exception as exc:  # pragma: no cover - demo guard
                     hub.emit({"type": "error", "message": str(exc)})
 
@@ -185,8 +200,9 @@ def _worker(
         except Exception as exc:
             hub.emit({"type": "error", "message": f"open {port.device}: {exc}"})
             return
+        fallback = hub.operator_pilot if config.settings.allow_manual_pilot else ""
         try:
-            orchestrator.process(fc)
+            orchestrator.process(fc, pilot_fallback=fallback)
         except Exception as exc:
             hub.emit({"type": "error", "message": f"capture failed: {exc}"})
         finally:

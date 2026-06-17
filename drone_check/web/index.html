@@ -46,7 +46,9 @@
     .rule .why { color: var(--muted); font-size: 12px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     td { padding: 4px 0; } td.k { color: var(--muted); width: 42%; }
-    .pilot { display:flex; gap: 8px; margin-top: 8px; }
+    .pilot { display:flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+    .pilot-prompt { color: var(--muted); font-size: 12px; }
+    .pilot-row { display: flex; gap: 8px; }
     .pilot input { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid var(--line);
                    background: #0c0e12; color: var(--text); }
     .pilot button { background: var(--green); color:#fff; border:0; padding: 8px 14px;
@@ -71,8 +73,14 @@
       <h2>Capture</h2>
       <ul class="steps" id="steps"></ul>
       <div class="pilot hidden" id="pilotBox">
-        <input id="pilotName" placeholder="Pilot name (optional)" />
-        <button id="pilotSave">Save</button>
+        <div class="pilot-prompt" id="pilotPrompt">
+          Operator fallback pilot — used for the folder label only when the
+          flight controller reports no pilot name. Captured data is never edited.
+        </div>
+        <div class="pilot-row">
+          <input id="pilotName" placeholder="Fallback pilot name — press Enter to apply" />
+          <button id="pilotSave">Apply</button>
+        </div>
       </div>
     </div>
 
@@ -89,7 +97,6 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
-    let currentUid = "";
 
     const STEP_LABELS = {
       identify: "Identify (MSP)", cli: "Read settings (CLI)",
@@ -118,7 +125,9 @@
     function renderInfo(snap) {
       const fw = snap.firmware, vtx = snap.vtx;
       const rows = [
-        ["Pilot", snap.pilot || "—"], ["FC serial", snap.uid],
+        ["Pilot Name", snap.pilot_name || "—"],
+        ["Craft Name", snap.craft_name || "—"],
+        ["FC serial", snap.uid],
         ["Firmware", `${fw.firmware_name} ${fw.version} (${fw.variant})`],
         ["Target / board", `${fw.target} / ${fw.board_name}`],
         ["Git hash", fw.git_hash],
@@ -152,15 +161,18 @@
 
     function handle(evt) {
       switch (evt.type) {
+        case "config":
+          // The captured logs are immutable; the field is only an operator
+          // fallback for the folder label, shown when enabled in config.
+          if (evt.allow_manual_pilot) $("pilotBox").classList.remove("hidden");
+          else $("pilotBox").classList.add("hidden");
+          break;
         case "ready": $("conn").textContent = "ready — waiting for a drone"; break;
         case "detected":
           resetCapture();
           $("conn").textContent = "drone detected on " + (evt.port || "?"); break;
         case "step": setStep(evt.step, evt.status); break;
-        case "need_pilot":
-          currentUid = evt.uid; $("pilotBox").classList.remove("hidden"); $("pilotName").focus(); break;
         case "verdict":
-          $("pilotBox").classList.add("hidden");
           renderInfo(evt.snapshot); renderRules(evt.evaluation); showVerdict(evt.passed);
           $("conn").textContent = "done — " + (evt.path || ""); break;
         case "error":
@@ -177,11 +189,17 @@
     }
     connect();
 
-    $("pilotSave").onclick = async () => {
-      await fetch("/api/pilot", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uid: currentUid, name: $("pilotName").value }) });
-      $("pilotBox").classList.add("hidden"); $("pilotName").value = "";
-    };
+    async function applyOperatorPilot() {
+      const name = $("pilotName").value.trim();
+      const r = await fetch("/api/operator-pilot", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }) });
+      const data = await r.json().catch(() => ({}));
+      $("pilotPrompt").textContent = data.ok
+        ? (name ? `Fallback pilot set to '${name}' (folder label only).` : "Fallback pilot cleared.")
+        : "Manual pilot entry is disabled in config.";
+    }
+    $("pilotSave").onclick = applyOperatorPilot;
+    $("pilotName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); applyOperatorPilot(); } });
     $("demo").onclick = () => fetch("/api/demo", { method: "POST" });
   </script>
 </body>

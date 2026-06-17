@@ -1,9 +1,14 @@
-"""Per-drone workflow: identify -> ask pilot -> capture -> verify -> evaluate -> store.
+"""Per-drone workflow: identify -> capture -> verify -> evaluate -> store.
 
 The orchestrator is transport-agnostic: it takes a :class:`FlightController`
 (real or fake) and drives the full sequence, emitting structured events so any
 front-end (web UI, CLI) can render live progress. Each step validates the data
 it receives for completeness before moving on.
+
+The pilot name is deliberately *not* part of this flow: capturing the drone must
+not wait on operator input. The pilot and craft names are read from the flight
+controller itself and the capture is written once, immutably (see
+:func:`storage.save_capture`).
 """
 
 from __future__ import annotations
@@ -21,7 +26,6 @@ from .rules import RuleEngine, load_rules
 from .storage import save_capture
 
 EmitFn = Callable[[dict], None]
-AskPilotFn = Callable[[dict], str]
 
 
 def _now_iso() -> str:
@@ -29,15 +33,9 @@ def _now_iso() -> str:
 
 
 class Orchestrator:
-    def __init__(
-        self,
-        config: AppConfig,
-        emit: Optional[EmitFn] = None,
-        ask_pilot: Optional[AskPilotFn] = None,
-    ):
+    def __init__(self, config: AppConfig, emit: Optional[EmitFn] = None):
         self.config = config
         self._emit = emit or (lambda evt: None)
-        self._ask_pilot = ask_pilot or (lambda ctx: "")
 
         self._verifier = FirmwareVerifier(
             allowlist=config.allowlist,
@@ -47,8 +45,14 @@ class Orchestrator:
         # Build the rule engine eagerly so a bad rules.yaml fails fast.
         self._engine = RuleEngine(load_rules(config.rules))
 
-    def process(self, fc: FlightController) -> tuple[DroneSnapshot, Evaluation, Path]:
-        """Run the full workflow for one connected flight controller."""
+    def process(
+        self, fc: FlightController, pilot_fallback: str = ""
+    ) -> tuple[DroneSnapshot, Evaluation, Path]:
+        """Run the full workflow for one connected flight controller.
+
+        ``pilot_fallback`` is used only for the folder label when the FC reports
+        no pilot name; it never enters the captured data files.
+        """
         captured_at = _now_iso()
 
         # 1. Identify via MSP (machine-readable, validated for completeness).
@@ -68,28 +72,21 @@ class Orchestrator:
             }
         )
 
-        # 2. Ask the operator for the pilot name (optional).
-        pilot = ""
-        if self.config.settings.ask_pilot_name:
-            self._emit({"type": "need_pilot", "uid": ident.uid})
-            pilot = (self._ask_pilot({"uid": ident.uid, "variant": ident.variant}) or "").strip()
-
-        # 3. Capture full settings via the text CLI, then exit cleanly.
+        # 2. Capture full settings via the text CLI, then exit cleanly.
         self._emit({"type": "step", "step": "cli", "status": "running"})
         cli_outputs = fc.run_cli(self.config.settings.cli_commands)
         self._validate_cli(cli_outputs)
         self._emit({"type": "step", "step": "cli", "status": "ok"})
 
-        # 4. Build the normalised snapshot.
+        # 3. Build the normalised snapshot (pilot stays empty for now).
         snapshot = build_snapshot(
             ident,
             cli_outputs,
             captured_at=captured_at,
             allow_diff_fallback=self.config.settings.parse_diff_fallback,
         )
-        snapshot.pilot = pilot
 
-        # 5. Firmware-hash verification.
+        # 4. Firmware-hash verification.
         self._emit({"type": "step", "step": "firmware_hash", "status": "running"})
         verify_snapshot(snapshot, self._verifier)
         self._emit(
@@ -102,22 +99,26 @@ class Orchestrator:
             }
         )
 
-        # 6. Evaluate rules.
+        # 5. Evaluate rules.
         evaluation = self._engine.evaluate(snapshot)
 
-        # 7. Persist everything.
+        # 6. Persist everything — written once, never modified afterwards.
         out_dir = save_capture(
             self.config.settings.log_dir,
             snapshot,
             evaluation,
             cli_outputs,
             captured_at,
+            folder_template=self.config.settings.folder_template,
+            pilot_fallback=pilot_fallback,
         )
 
         self._emit(
             {
                 "type": "verdict",
                 "passed": evaluation.passed,
+                "uid": snapshot.uid,
+                "captured_at": captured_at,
                 "snapshot": snapshot.to_dict(),
                 "evaluation": evaluation.to_dict(),
                 "path": str(out_dir),

@@ -121,12 +121,19 @@ def parse_diff(text: str) -> ParsedConfig:
             if len(nums) >= 8:
                 cfg.logic_lines.append(nums)
         elif head == "vtxtable":
-            # e.g. "vtxtable powervalues 25 100 200 400 600"
-            if tokens:
+            # e.g. "vtxtable powervalues 14 20 26 36"  (numeric)
+            #      "vtxtable powerlabels 25 100 400 MAX"  (labels are strings!)
+            # Keep numeric tokens as ints and non-numeric (e.g. "MAX") as str so
+            # display labels are never silently dropped.
+            if len(tokens) >= 2:
                 sub = tokens[0]
-                values = _as_ints(tokens[1:])
-                if values:
-                    cfg.vtxtable[sub] = values
+                parsed: list = []
+                for t in tokens[1:]:
+                    try:
+                        parsed.append(int(t))
+                    except ValueError:
+                        parsed.append(t)
+                cfg.vtxtable[sub] = parsed
         elif head == "board_name" and tokens:
             cfg.board_name = tokens[0]
         elif head == "manufacturer_id" and tokens:
