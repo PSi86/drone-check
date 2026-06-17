@@ -27,6 +27,11 @@ from .storage import save_capture
 
 EmitFn = Callable[[dict], None]
 
+# A complete dump/diff ends with one of these (from the BF/INAV cli.c source):
+#   Betaflight `dump`/`dump all`  -> "save"
+#   Betaflight `diff` / all INAV  -> "batch end"
+_DUMP_TERMINATORS = ("save", "batch end")
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
@@ -127,20 +132,43 @@ class Orchestrator:
         return snapshot, evaluation, out_dir
 
     def _validate_cli(self, cli_outputs: dict[str, str]) -> None:
-        """Completeness check: an authoritative dump must be present and non-trivial.
+        """Guarantee the dump is complete before we trust it.
 
-        Mid-stream truncation is already caught by the CLI prompt detection; this
-        guards against the dump command being missing or returning almost nothing.
+        Three independent layers:
+          1. Transport/CLI: each command read must END at the CLI prompt, so a
+             timeout-truncated read is already rejected in CliSession.command().
+          2. Volume: a dump must be present and have enough settings (catches a
+             near-empty read).
+          3. Terminator: a complete dump/diff ends with its own closing
+             statement. Per the firmware source, ``dump``/``dump all`` ends with
+             ``save`` (Betaflight) and ``diff`` / all INAV dumps end with
+             ``batch end``. If the last line is neither, the stream was cut off
+             (even if it happened to stop right after a "# " comment line).
         """
         sources = ["dump all", "dump"]
         if self.config.settings.parse_diff_fallback:
             sources += ["diff all", "diff"]
+
+        dump = ""
         for cmd in sources:
-            text = cli_outputs.get(cmd, "")
-            set_lines = sum(1 for line in text.splitlines() if line.strip().startswith("set "))
-            if set_lines >= 3:
-                return
-        raise ValueError(
-            "CLI capture incomplete: no usable settings dump received "
-            f"(looked for {', '.join(sources)})"
-        )
+            if cli_outputs.get(cmd):
+                dump = cli_outputs[cmd]
+                break
+        if not dump:
+            raise ValueError(
+                f"CLI capture incomplete: no dump output (looked for {', '.join(sources)})"
+            )
+
+        lines = [ln.strip() for ln in dump.splitlines() if ln.strip()]
+        set_lines = sum(1 for ln in lines if ln.startswith("set "))
+        if set_lines < 3:
+            raise ValueError(
+                f"CLI capture incomplete: dump has too few settings ({set_lines} 'set' lines)"
+            )
+
+        last = lines[-1].lower() if lines else ""
+        if last not in _DUMP_TERMINATORS:
+            raise ValueError(
+                "CLI capture incomplete: dump does not end with a terminator "
+                f"('save' or 'batch end') — last line was {lines[-1]!r} (truncated)"
+            )

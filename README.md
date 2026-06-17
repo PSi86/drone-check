@@ -115,6 +115,12 @@ logs/<timestamp>_<pilot_name>_<craft_name>/
     raw/<command>.txt  raw output of each captured CLI command
 ```
 
+A per-session application log (`logs/session-<timestamp>.log`) records USB/COM
+port actions, warnings, errors and successful captures. The web UI shows the
+same entries in a live "Session log" list (newest first, length configurable via
+`log_list_length`). The header always reflects the *current* state — after an
+unstable connection it returns to "Ready" once the drone is removed.
+
 ## Configuration
 
 All config lives in `config/`:

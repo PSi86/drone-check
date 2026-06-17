@@ -26,8 +26,17 @@ connect_delay: 0.3        # settle time after opening the port
 cli_idle_timeout: 1.5     # end a read after this gap with no bytes
 cli_max_wait: 45.0        # absolute cap per CLI command (dump all is large)
 
+# USB hot-plug debounce (absorbs cable wiggle / re-enumeration). A port must be
+# present this long before reading, and absent this long before "ready".
+connect_debounce: 3.0
+disconnect_debounce: 3.0
+
 # Set a directory to record raw serial traffic for every capture (debugging).
 # debug_dir: debug
+
+# Session application log (USB/COM actions, warnings, errors, successes): how
+# many recent entries the web UI keeps and shows (newest first).
+log_list_length: 100
 
 # CLI commands captured during the text-CLI phase, in order.
 #   `dump all` -> authoritative source: every setting with its absolute value,

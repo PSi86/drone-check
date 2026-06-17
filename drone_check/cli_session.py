@@ -37,7 +37,10 @@ class CliSession:
         drain(self._t, 0.2)
         self._t.write(CLI_ENTER + b"\r")
         banner = read_until(self._t, PROMPT, self._idle, self._max_wait)
-        if PROMPT not in banner:
+        # The stream must END with the prompt — not merely contain it (dump/diff
+        # output is full of "# ..." comment lines). Anything else means the read
+        # timed out, i.e. the link stalled before the CLI was ready.
+        if not banner.endswith(PROMPT):
             raise CliError("did not receive CLI prompt after entering CLI mode")
         self._in_cli = True
         return banner.decode("ascii", "replace")
@@ -45,15 +48,21 @@ class CliSession:
     def command(self, cmd: str) -> str:
         """Run one CLI command and return its output (prompt/echo stripped).
 
-        Completeness is enforced by requiring the prompt to reappear; a missing
-        prompt means the output was truncated or the link stalled.
+        Completeness is enforced by requiring the output to **end** with the
+        prompt. A substring check is not enough: dump/diff output contains many
+        "# ..." comment lines, so a read truncated by a timeout would still
+        "contain" a prompt. Ending with the prompt means the FC finished writing
+        and is waiting for input — i.e. the response is complete.
         """
         if not self._in_cli:
             raise CliError("CLI session not entered")
         self._t.write(cmd.encode("ascii") + b"\r")
         raw = read_until(self._t, PROMPT, self._idle, self._max_wait)
-        if PROMPT not in raw:
-            raise CliError(f"incomplete response for command {cmd!r} (no prompt)")
+        if not raw.endswith(PROMPT):
+            raise CliError(
+                f"incomplete response for command {cmd!r}: "
+                "stream did not end at the CLI prompt (link stalled / truncated)"
+            )
         text = raw.decode("ascii", "replace")
         return _strip_echo_and_prompt(text, cmd)
 

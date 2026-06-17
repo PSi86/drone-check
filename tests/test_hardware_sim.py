@@ -28,9 +28,9 @@ def test_cli_capture_not_truncated_by_comment_lines():
     # The version echo line must be stripped, leaving the firmware header.
     assert outputs["version"].startswith("# Betaflight")
     # dump all is full of "# ..." comment lines; capture must reach the very end
-    # ("batch end") rather than stopping at the first "# " comment.
+    # (the trailing "save") rather than stopping at the first "# " comment.
     assert "vtx_low_power_disarm = ON" in outputs["dump all"]
-    assert "batch end" in outputs["dump all"]
+    assert outputs["dump all"].strip().splitlines()[-1] == "save"
     assert "MCU F405" in outputs["status"]
 
 

@@ -63,7 +63,10 @@ class RealFlightController:
             for cmd in commands:
                 outputs[cmd] = self._cli.command(cmd)
         finally:
-            self._cli.exit_clean()
+            # Leave without rebooting: a reboot would drop the USB port and look
+            # like a disconnect. The port stays until the operator unplugs the
+            # drone, which is exactly the "wait for serial disconnect" workflow.
+            self._cli.exit_clean(reboot=False)
         return outputs
 
     def close(self) -> None:

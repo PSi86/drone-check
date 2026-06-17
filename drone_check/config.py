@@ -30,8 +30,18 @@ class Settings:
     cli_idle_timeout: float = 1.5
     cli_max_wait: float = 30.0
 
+    # USB hot-plug debounce. A port must be present continuously for
+    # connect_debounce seconds before we read it, and absent continuously for
+    # disconnect_debounce seconds before we consider the drone removed. This
+    # absorbs cable wiggle and USB re-enumeration.
+    connect_debounce: float = 3.0
+    disconnect_debounce: float = 3.0
+
     # When set, raw serial traffic is teed to <debug_dir>/<port>-<time>.log.
     debug_dir: Path | None = None
+
+    # Session application log: how many recent entries the web UI keeps/shows.
+    log_list_length: int = 100
 
     # Firmware-hash verification.
     hash_use_allowlist: bool = True
@@ -74,8 +84,11 @@ def load_settings(path: Path) -> Settings:
     s.connect_delay = float(data.get("connect_delay", s.connect_delay))
     s.cli_idle_timeout = float(data.get("cli_idle_timeout", s.cli_idle_timeout))
     s.cli_max_wait = float(data.get("cli_max_wait", s.cli_max_wait))
+    s.connect_debounce = float(data.get("connect_debounce", s.connect_debounce))
+    s.disconnect_debounce = float(data.get("disconnect_debounce", s.disconnect_debounce))
     if data.get("debug_dir"):
         s.debug_dir = Path(data["debug_dir"])
+    s.log_list_length = int(data.get("log_list_length", s.log_list_length))
 
     hashcfg = data.get("firmware_hash", {}) or {}
     s.hash_use_allowlist = bool(hashcfg.get("use_allowlist", s.hash_use_allowlist))

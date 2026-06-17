@@ -55,6 +55,17 @@
                     border-radius: 6px; cursor: pointer; }
     .hidden { display: none; }
     code { color: #c7d2fe; }
+    .verdict.error { background: #2a1e10; border-color: #b8791f; color: #f0c879; }
+    .log { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto;
+           font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; }
+    .log li { display: flex; gap: 10px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+    .log .ts { color: var(--muted); white-space: nowrap; }
+    .log .lvl { white-space: nowrap; text-transform: uppercase; font-weight: 700; width: 44px; }
+    .log .msg { color: var(--text); word-break: break-word; }
+    .log .info .lvl { color: var(--muted); }
+    .log .ok   .lvl { color: var(--green); }
+    .log .warn .lvl { color: #f0c879; }
+    .log .error .lvl { color: var(--red); }
   </style>
 </head>
 <body>
@@ -93,10 +104,16 @@
       <h2>Checks</h2>
       <div id="rules"></div>
     </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>Session log</h2>
+      <ul class="log" id="log"></ul>
+    </div>
   </main>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    let LOG_MAX = 100;
 
     const STEP_LABELS = {
       identify: "Identify (MSP)", cli: "Read settings (CLI)",
@@ -116,10 +133,9 @@
     }
 
     function resetCapture() {
+      // Clear the live capture panels; the banner is set via setState().
       $("steps").innerHTML = ""; for (const k in stepEls) delete stepEls[k];
       $("rules").innerHTML = ""; $("info").querySelector("tbody").innerHTML = "";
-      $("verdict").className = "verdict"; $("verdict").firstChild.textContent = "Capturing…";
-      $("verdictSub").textContent = "";
     }
 
     function renderInfo(snap) {
@@ -151,41 +167,112 @@
         </div>`).join("");
     }
 
-    function showVerdict(passed) {
+    // --- ONE source of truth for the current state ---
+    // The header (top-left) and the big badge are two renderings of the same
+    // state, so they can never contradict each other.
+    const STATES = {
+      waiting:   { cls: "",      title: "Waiting for a drone…", sub: "Plug in a flight controller via USB.", header: "Ready — waiting for a drone" },
+      settling:  { cls: "",      title: "Drone detected",       sub: "Verifying stable connection…",         header: "Detected — settling" },
+      capturing: { cls: "",      title: "Capturing…",           sub: "Reading the flight controller…",       header: "Capturing" },
+      pass:      { cls: "pass",  title: "PASS ✓",               sub: "All critical checks passed.",          header: "PASS" },
+      fail:      { cls: "fail",  title: "FAIL ✗",               sub: "One or more critical checks failed.",  header: "FAIL" },
+      error:     { cls: "error", title: "Error",                sub: "capture error",                        header: "Error" },
+    };
+    let settleTimer = null;
+    function clearSettle() { if (settleTimer) { clearInterval(settleTimer); settleTimer = null; } }
+    function setStatus(text) { $("conn").textContent = text; }
+    function setState(kind, opts = {}) {
+      clearSettle();  // any state change cancels a running settle countdown
+      const s = STATES[kind] || STATES.waiting;
       const v = $("verdict");
-      v.className = "verdict " + (passed ? "pass" : "fail");
-      v.firstChild.textContent = passed ? "PASS ✓" : "FAIL ✗";
-      $("verdictSub").textContent = passed
-        ? "All critical checks passed." : "One or more critical checks failed.";
+      v.className = "verdict " + s.cls;
+      v.firstChild.textContent = s.title;
+      $("verdictSub").textContent = opts.sub || s.sub;
+      setStatus(opts.header || s.header);
+    }
+
+    // --- session log (newest first, capped to LOG_MAX) ---
+    function logRow(entry) {
+      const li = document.createElement("li");
+      li.className = entry.level || "info";
+      li.innerHTML = `<span class="ts">${entry.ts || ""}</span>` +
+        `<span class="lvl">${entry.level || "info"}</span>` +
+        `<span class="msg"></span>`;
+      li.querySelector(".msg").textContent = entry.message || "";
+      return li;
+    }
+    function addLog(entry) {
+      const list = $("log");
+      list.insertBefore(logRow(entry), list.firstChild);
+      while (list.children.length > LOG_MAX) list.removeChild(list.lastChild);
+    }
+    function setLog(entries) {
+      $("log").innerHTML = "";
+      (entries || []).forEach(addLog);  // oldest..newest -> prepended -> newest first
     }
 
     function handle(evt) {
       switch (evt.type) {
         case "config":
+          if (evt.log_list_length) LOG_MAX = evt.log_list_length;
           // The captured logs are immutable; the field is only an operator
           // fallback for the folder label, shown when enabled in config.
           if (evt.allow_manual_pilot) $("pilotBox").classList.remove("hidden");
           else $("pilotBox").classList.add("hidden");
           break;
-        case "ready": $("conn").textContent = "ready — waiting for a drone"; break;
-        case "detected":
+        case "log_batch": setLog(evt.entries); break;
+        case "log": addLog(evt.entry); break;
+        case "ready":
+          // Authoritative "current state": always recover to a clear ready view,
+          // even after an error or an unstable connection.
+          setState("waiting");
+          break;
+        case "detected": {
           resetCapture();
-          $("conn").textContent = "drone detected on " + (evt.port || "?"); break;
+          const port = evt.port || "?";
+          let n = Math.round(evt.settle || 3);
+          const tick = () => setState("settling", {
+            header: "Detected " + port + " — settling…",
+            sub: "Verifying stable connection… " + n + " s"
+              + (evt.description ? "  ·  " + evt.description : ""),
+          });
+          tick();
+          settleTimer = setInterval(() => {
+            n -= 1;
+            if (n <= 0) { clearSettle(); return; }
+            $("verdictSub").textContent = "Verifying stable connection… " + n + " s"
+              + (evt.description ? "  ·  " + evt.description : "");
+          }, 1000);
+          break;
+        }
+        case "capturing":
+          setState("capturing", { header: "Capturing — " + (evt.port || "?") });
+          break;
         case "step": setStep(evt.step, evt.status); break;
         case "verdict":
-          renderInfo(evt.snapshot); renderRules(evt.evaluation); showVerdict(evt.passed);
-          $("conn").textContent = "done — " + (evt.path || ""); break;
+          renderInfo(evt.snapshot); renderRules(evt.evaluation);
+          setState(evt.passed ? "pass" : "fail", {
+            header: (evt.passed ? "PASS" : "FAIL") + (evt.path ? " — " + evt.path : ""),
+          });
+          break;
+        case "disconnected":
+          // History only (it is in the session log); never override the badge,
+          // so the header and the badge always agree.
+          break;
         case "error":
-          setStep("identify", "error");
-          $("verdictSub").textContent = "Error: " + evt.message; break;
+          setState("error", {
+            sub: evt.message || "capture error",
+            header: "Error — remove the drone; the tool stays ready",
+          });
+          break;
       }
     }
 
     function connect() {
       const ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/ws");
-      ws.onopen = () => { $("conn").textContent = "ready"; setInterval(() => ws.readyState === 1 && ws.send("ping"), 15000); };
+      ws.onopen = () => { setStatus("connected"); setInterval(() => ws.readyState === 1 && ws.send("ping"), 15000); };
       ws.onmessage = (m) => handle(JSON.parse(m.data));
-      ws.onclose = () => { $("conn").textContent = "disconnected — retrying…"; setTimeout(connect, 2000); };
+      ws.onclose = () => { setStatus("disconnected from server — retrying…"); setTimeout(connect, 2000); };
     }
     connect();
 

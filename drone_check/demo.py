@@ -55,8 +55,8 @@ set vtx_freq = 5917
 
 profile 0
 
-# end the command batch
-batch end
+# save configuration
+save
 """
 
 BETAFLIGHT_STATUS = """\
@@ -84,7 +84,11 @@ set vtx_channel = 1
 set vtx_power = 1
 set vtx_low_power_disarm = ON
 
-# end
+# save configuration
+save
+
+# end the command batch
+batch end
 """
 
 
@@ -176,8 +180,8 @@ set vtx_channel = 1
 set vtx_power = 3
 set vtx_low_power_disarm = OFF
 
-# end the command batch
-batch end
+# save configuration
+save
 """
 
 
@@ -223,7 +227,8 @@ set pilot_name = LEGACY
 set vtx_power = 1
 set vtx_low_power_disarm = ON
 
-batch end
+# save configuration
+save
 """
 
 

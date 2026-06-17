@@ -51,6 +51,32 @@ def test_demo_folder_named_from_fc_and_immutable(tmp_path):
         assert on_disk["pilot_name"] == "MAX POWER"
 
 
+def test_session_log_replayed_and_streamed(tmp_path):
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as ws:
+            seen = {}
+            for _ in range(6):
+                evt = ws.receive_json()
+                seen[evt["type"]] = evt
+                if "config" in seen and "log_batch" in seen:
+                    break
+            # on connect the client gets its config and the session log so far
+            assert "log_batch" in seen
+            assert any("session started" in e["message"] for e in seen["log_batch"]["entries"])
+
+            # demo activity is streamed as live 'log' events
+            client.post("/api/demo")
+            messages = []
+            for _ in range(60):
+                evt = ws.receive_json()
+                if evt["type"] == "log":
+                    messages.append(evt["entry"]["message"])
+                if any("demo: detected" in m for m in messages):
+                    break
+            assert any("demo: detected" in m for m in messages)
+
+
 def test_operator_pilot_disabled_by_default(tmp_path):
     app = create_app(_config(tmp_path, allow_manual=False), demo=True)
     with TestClient(app) as client:

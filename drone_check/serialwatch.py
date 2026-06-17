@@ -77,14 +77,58 @@ def watch(
         time.sleep(poll_interval)
 
 
-def wait_for_disconnect(
+def is_present(device: str) -> bool:
+    return any(p.device == device for p in list_ports())
+
+
+def wait_present_stable(
     device: str,
-    poll_interval: float = 0.5,
+    settle: float,
+    poll: float = 0.25,
     should_stop: Callable[[], bool] = lambda: False,
-) -> None:
-    """Block until ``device`` disappears from the serial-port list."""
+) -> bool:
+    """Return True once ``device`` has been present continuously for ``settle``.
+
+    Returns False if the device disappears before then (a spurious blip) or if
+    ``should_stop`` fires. Used as the connect debounce after a hot-plug.
+    """
+    deadline = time.monotonic() + settle
     while not should_stop():
-        names = {p.device for p in list_ports()}
-        if device not in names:
-            return
-        time.sleep(poll_interval)
+        if not is_present(device):
+            return False
+        if time.monotonic() >= deadline:
+            return True
+        time.sleep(poll)
+    return False
+
+
+def wait_absent_debounced(
+    device: str,
+    debounce: float,
+    last_ok: bool,
+    poll: float = 0.25,
+    should_stop: Callable[[], bool] = lambda: False,
+) -> str:
+    """Wait for a drone to be removed after a capture (the disconnect debounce).
+
+    Returns ``"ready"`` once the device has been absent continuously for
+    ``debounce`` seconds. If the device becomes present again before that:
+      * after a failed capture (``last_ok`` False) -> return ``"reread"`` to
+        retry the (still-connected, flaky) drone;
+      * after a successful capture -> the reappearance is treated as cable
+        wiggle: the absence timer resets and we keep waiting for a real removal.
+    """
+    absent_since: float | None = None
+    while not should_stop():
+        now = time.monotonic()
+        if is_present(device):
+            if not last_ok:
+                return "reread"
+            absent_since = None  # wiggle after success -> ignore, reset timer
+        else:
+            if absent_since is None:
+                absent_since = now
+            elif now - absent_since >= debounce:
+                return "ready"
+        time.sleep(poll)
+    return "ready"
