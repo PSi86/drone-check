@@ -37,6 +37,63 @@ def _session(data: bytes) -> CliSession:
     return cli
 
 
+class FramedTransport:
+    """Serves one framed (STX..ETX) reply and records what was written."""
+
+    def __init__(self, reply: bytes):
+        self._reply = bytearray(reply)
+        self.sent = bytearray()
+
+    def write(self, data: bytes) -> None:
+        self.sent += data
+
+    def read(self, size: int) -> bytes:
+        chunk = bytes(self._reply[:size])
+        del self._reply[: len(chunk)]
+        return chunk
+
+    def close(self) -> None:
+        pass
+
+
+def test_command_framed_encodes_request_and_decodes_reply():
+    # Reply is STX <lines, CRLF-separated> ETX (as Betaflight >= 4.5.4 sends).
+    t = FramedTransport(b"\x02# Betaflight\r\nset craft_name = U250\r\nsave\r\n\x03")
+    cli = CliSession(t, idle_timeout=0.1, max_wait=1.0)
+    out = cli.command_framed("dump all")
+    # Request is framed STX <cmd> LF ETX — no '#', no CR.
+    assert bytes(t.sent) == b"\x02dump all\x0a\x03"
+    # Reply is decoded with STX/ETX/CR removed, LF lines kept.
+    assert "set craft_name = U250" in out and "save" in out
+    assert "\x02" not in out and "\x03" not in out and "\r" not in out
+
+
+def test_command_framed_incomplete_without_etx_raises():
+    t = FramedTransport(b"\x02partial output, link stalled\r\n")  # no ETX
+    cli = CliSession(t, idle_timeout=0.05, max_wait=0.3)
+    with pytest.raises(CliError):
+        cli.command_framed("dump all")
+
+
+def test_framed_cli_version_gate():
+    from drone_check.flightcontroller import RealFlightController
+
+    class _T:
+        def write(self, d): pass
+        def read(self, n): return b""
+        def close(self): pass
+
+    fc = RealFlightController(_T())
+    fc._version = "4.4.0"
+    assert fc._supports_framed_cli() is False
+    fc._version = "4.5.4"
+    assert fc._supports_framed_cli() is True
+    fc._version = "25.12.2"  # 2025.12.2 → MSP_FC_VERSION major/minor/patch
+    assert fc._supports_framed_cli() is True
+    fc._version = ""
+    assert fc._supports_framed_cli() is False
+
+
 def test_command_complete_when_stream_ends_at_prompt():
     data = b"dump all\r\nset a = 1\r\n# master\r\nset b = 2\r\nbatch end\r\n# "
     out = _session(data).command("dump all")
