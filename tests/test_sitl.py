@@ -38,6 +38,9 @@ def test_load_dump_filters_framing_and_drives_save(fake_socket):
         "# Betaflight ...",
         "batch start",
         "board_name BETAFPVF405",
+        "resource MOTOR 1 B00",
+        "timer A00 AF1",
+        "dma pin A00 0",
         "set craft_name = U250_FPV",
         "set motor_pwm_protocol = DSHOT600",
         "save",
@@ -50,10 +53,14 @@ def test_load_dump_filters_framing_and_drives_save(fake_socket):
     body = lines[1:]
     assert "set craft_name = U250_FPV" in body
     assert "set motor_pwm_protocol = DSHOT600" in body
-    assert "board_name BETAFPVF405" in body  # resource/board lines are sent as-is
+    assert "board_name BETAFPVF405" in body  # identity lines are sent as-is
     # The dump's own comments and batch framing are dropped...
     assert not any(ln.startswith("#") for ln in body)
     assert "batch start" not in body
+    # ...and hardware pin/peripheral maps SITL rejects are skipped entirely.
+    assert "resource MOTOR 1 B00" not in body
+    assert "timer A00 AF1" not in body
+    assert "dma pin A00 0" not in body
     # ...but we drive `save` exactly once at the end to persist + reboot.
     assert body.count("save") == 1
     assert body[-1] == "save"

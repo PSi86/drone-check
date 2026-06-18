@@ -138,6 +138,11 @@ to SITL's TCP port. Configure under `sitl:` in `config/settings.yaml`.
 powervalues/powerlabels — the anti-cheat-relevant data. drone-check's own dump
 analysis still remains the authoritative source for VTX power.
 
+The first "view in Configurator" for a capture takes ~30–45 s (the whole `dump
+all` is fed through SITL's CLI; the page shows live progress). The result is
+cached per capture, so viewing the same drone again is near-instant. The cache
+is invalidated automatically when the SITL binary is rebuilt.
+
 **Limitation:** SITL has no real motor outputs, so the motor and mixer tabs show
 warnings. That is expected and does not affect the inspection.
 

@@ -195,8 +195,11 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     async def sitl_status() -> JSONResponse:
         st = sitl.status()
         return JSONResponse({
-            "running": st.running, "version": st.version,
-            "capture_id": st.capture_id, "connect_url": st.connect_url,
+            "running": st.running, "starting": st.starting,
+            "phase": st.phase, "detail": st.detail,
+            "sent": st.sent, "total": st.total,
+            "version": st.version, "capture_id": st.capture_id,
+            "connect_url": st.connect_url,
         })
 
     @app.post("/api/sitl/stop")
