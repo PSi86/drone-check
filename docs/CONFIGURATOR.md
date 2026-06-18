@@ -99,8 +99,47 @@ It also performs two build prerequisites automatically:
   structurally requires the directory to exist.
 - **`make arm_sdk_install`** — the build validates the ARM toolchain even for the
   host SITL target. The SDK is fetched into the repo's `tools/` dir (no `sudo`,
-  no `PATH` change). The rule moved from the top `Makefile` (4.4.x) to
-  `mk/tools.mk` (2024.x+), so the script searches both.
+  no `PATH` change). The rule lives in `make/tools.mk` (4.4.x) or `mk/tools.mk`
+  (2024.x+), so the script searches the top `Makefile` and both dirs.
+
+The binaries are linked **statically** (`OPTIONS=SITL_STATIC` on 2024.x+; 4.4.x
+links static by default), so each one carries its own libc and runs on any Linux
+/ WSL distro regardless of its glibc version — which is what makes the cache
+distributable (see below).
+
+## Distributing the pre-built binaries
+
+You only need a build toolchain (and the minutes-long compile) on the machine
+that *builds* the binaries. To run the feature on another machine you just need
+the tiny pre-built binaries plus WSL — no toolchain, no source, no internet.
+
+What a target machine needs:
+
+- **WSL** with any glibc-based distro (e.g. `Ubuntu`). The statically-linked
+  binaries don't depend on the distro's glibc version, so an older distro is
+  fine. (`websockify` runs on the Windows side as part of drone-check, so WSL
+  only has to *run* the binary and bind a localhost port.)
+- The binaries installed into the SITL cache (`sitl.cache_dir`).
+
+Workflow:
+
+```powershell
+# On the build machine: build once (static), then bundle the cache.
+#   bash scripts/build_sitl.sh 4.4.0 4.5.4 2025.12.2     # inside WSL
+drone-check sitl list                                    # what's cached + static?
+drone-check sitl package C:\share\sitl-bundle.tar.gz     # all cached versions
+#   (or: drone-check sitl package <out> 2025.12.2 4.4.0  # just these)
+
+# Copy sitl-bundle.tar.gz to the target machine, then:
+drone-check sitl install C:\path\to\sitl-bundle.tar.gz   # extracts + checksums
+drone-check sitl list                                    # confirm
+```
+
+The bundle is a `tar.gz` of `<version>/betaflight_SITL.elf` plus a `SHA256SUMS`
+manifest; `install` verifies the checksums before the binaries are used. Ten
+versions are only a few MB. `sitl list` flags any **dynamic** (non-portable)
+binary — rebuild those with the current `build_sitl.sh` so the bundle works on
+older target distros.
 
 ## Using it
 

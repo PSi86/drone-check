@@ -145,6 +145,14 @@ Both old semver tags (e.g. `4.4.0`) and the newer date-based tags (e.g.
 `2025.12.2`) work — the build script adapts to the different source-tree layout
 each firmware generation uses.
 
+The binaries are statically linked, so you only build once and can hand the
+cache to other machines (which then need only WSL, no toolchain):
+
+```powershell
+drone-check sitl package C:\share\sitl-bundle.tar.gz   # bundle the cache
+drone-check sitl install C:\share\sitl-bundle.tar.gz   # on the target machine
+```
+
 Then on `/logs`, click **View in Configurator** and connect the Betaflight web
 Configurator (manual connection) to `ws://127.0.0.1:6761`.
 
