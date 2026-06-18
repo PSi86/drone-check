@@ -68,6 +68,85 @@ def test_load_dump_filters_framing_and_drives_save(fake_socket):
     assert fake_socket.closed
 
 
+class FramedFakeSock:
+    """A SITL socket speaking the framed MSP-CLI: every STX..ETX frame written
+    is acked with an ETX-terminated reply, so command_framed completes."""
+
+    def __init__(self):
+        self.sent = bytearray()
+        self.closed = False
+        self._inbox = bytearray()
+
+    def sendall(self, data):
+        self.sent += data
+        if data.endswith(b"\x03"):  # a complete frame → reply with an ETX frame
+            self._inbox += b"\x02ack\x03"
+
+    def settimeout(self, _t):
+        pass
+
+    def setblocking(self, _f):
+        pass
+
+    def recv(self, size):
+        if self._inbox:
+            chunk = bytes(self._inbox[:size])
+            del self._inbox[:size]
+            return chunk
+        raise socket.timeout()
+
+    def close(self):
+        self.closed = True
+
+
+def test_load_dump_framed_uses_stx_etx_and_save(monkeypatch):
+    sock = FramedFakeSock()
+    monkeypatch.setattr(sitl.socket, "create_connection", lambda *a, **k: sock)
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+
+    dump = "\n".join([
+        "# version",
+        "batch start",
+        "board_name BETAFPVF405",
+        "resource MOTOR 1 B00",
+        "timer A00 AF1",
+        "dma pin A00 0",
+        "set craft_name = U250_FPV",
+        "save",
+    ])
+    sitl.load_dump_over_cli("127.0.0.1", 5761, dump, framed=True)
+
+    sent = bytes(sock.sent)
+    # The link is validated with a read-only framed `version` probe first.
+    assert b"\x02version\x0a\x03" in sent
+    # Real config lines are sent as STX..ETX frames, not raw newline commands.
+    assert b"\x02set craft_name = U250_FPV\x0a\x03" in sent
+    assert b"\x02board_name BETAFPVF405\x0a\x03" in sent
+    # `save` is driven exactly once, as a frame, to persist + reboot.
+    assert b"\x02save\x0a\x03" in sent
+    # The framed CLI never enters raw `#` mode, and framing/comments/HW maps are
+    # dropped just like the legacy path.
+    assert b"#\r" not in sent
+    assert b"resource" not in sent
+    assert b"timer" not in sent
+    assert b"batch start" not in sent
+    assert sock.closed
+
+
+def test_supports_framed_cli_picks_per_firmware_generation():
+    from drone_check.cli_session import supports_framed_cli
+    # Legacy raw-`#` firmware.
+    assert supports_framed_cli("4.4.0") is False
+    assert supports_framed_cli("4.5.0") is False
+    assert supports_framed_cli("4.5.3") is False
+    # Framed MSP-CLI firmware (>= 4.5.4 and the 2025.x year-based scheme).
+    assert supports_framed_cli("4.5.4") is True
+    assert supports_framed_cli("2025.12.2") is True
+    # Unparseable / missing → fail safe to legacy.
+    assert supports_framed_cli("") is False
+    assert supports_framed_cli(None) is False
+
+
 def test_connect_cli_retries_after_reset(monkeypatch):
     # The first connection is reset (as the cold-WSL localhost relay can do);
     # the second succeeds and reaches the CLI prompt.

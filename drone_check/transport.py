@@ -60,6 +60,40 @@ class SerialTransport:
             pass
 
 
+class SocketTransport:
+    """Transport backed by an already-connected TCP socket.
+
+    Used to drive a SITL instance's CLI/MSP over TCP (UART1 on 127.0.0.1:5761)
+    with the same :class:`CliSession` logic the real serial path uses. ``read``
+    returns whatever arrived within ``timeout`` (possibly empty), matching the
+    pyserial-style contract that :func:`read_until` expects.
+    """
+
+    def __init__(self, sock, timeout: float = 0.2):
+        import socket as _socket
+
+        self._socket_mod = _socket
+        self._sock = sock
+        self._sock.settimeout(timeout)
+
+    def write(self, data: bytes) -> None:
+        self._sock.sendall(data)
+
+    def read(self, size: int) -> bytes:
+        try:
+            return self._sock.recv(size)
+        except (self._socket_mod.timeout, BlockingIOError):
+            return b""
+        except OSError:
+            return b""
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+
+
 class LoggingTransport:
     """Wraps a transport and tees all traffic to a debug file.
 

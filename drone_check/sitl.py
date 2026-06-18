@@ -19,10 +19,14 @@ How it works (Windows host + SITL built for Linux, run under WSL):
        eeprom with the capture's configuration.
 * The web Configurator (2025.12+) speaks WebSocket only, so we run a ``websockify``
   proxy ``ws://127.0.0.1:6761`` → ``tcp://127.0.0.1:5761``.
+* The dump is fed through whichever CLI dialect the firmware uses — the legacy
+  raw ``#`` prompt (Betaflight < 4.5.4 / INAV) or the framed MSP-CLI (Betaflight
+  >= 4.5.4 / 2025.x, which ignores the raw ``#`` byte). See
+  :func:`drone_check.cli_session.supports_framed_cli`.
 
-Known limitation: stock SITL builds omit VTX support, so VTX settings are not
-visible in this view. drone-check's own dump analysis remains the authoritative
-source for VTX power. (A VTX-enabled SITL build is a planned follow-up.)
+The SITL binaries built by ``scripts/build_sitl.sh`` re-enable the VTX config
+table, so ``vtxtable`` power values/labels are visible in this view too;
+drone-check's own dump analysis remains the authoritative source for VTX power.
 """
 
 from __future__ import annotations
@@ -35,7 +39,16 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .cli_session import (
+    CliError,
+    CliSession,
+    ETX,
+    LF,
+    STX,
+    supports_framed_cli,
+)
 from .config import Settings
+from .transport import SocketTransport
 
 # Spawn long-lived children (the WSL/SITL process and the websockify proxy) in
 # their own process group on Windows. Otherwise they share drone-check's console
@@ -105,16 +118,13 @@ def _connect_cli(host: str, port: int, attempts: int = 4) -> socket.socket:
     raise SitlError(f"could not open SITL CLI on {host}:{port}: {last_exc}")
 
 
-def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -> None:
-    """Enter the SITL CLI, replay a ``dump all`` batch and persist it with ``save``.
+def _dump_commands(dump_text: str) -> list[str]:
+    """Filter a ``dump all`` to the config commands SITL should replay.
 
-    Comment and ``batch``/``save`` framing lines are dropped — we drive ``save``
-    ourselves. ``resource``/timer/dma/board lines are sent as-is; SITL rejects
-    them (no GPIO on a host target), which is harmless for viewing the config.
-
-    Lines are sent in chunks well under SITL's 1400-byte RX buffer, draining the
-    echo between chunks for flow control. ``progress_cb(sent, total)`` (if given)
-    is called after each chunk so the UI can show progress.
+    Drops comments and ``batch``/``save`` framing (we drive ``save`` ourselves)
+    and the hardware pin/peripheral maps SITL always rejects (``resource`` /
+    ``timer`` / ``dma`` — no GPIO on a host target). Skipping the latter changes
+    nothing in the loaded config and shaves time off the load.
     """
     cmds = []
     for raw in dump_text.splitlines():
@@ -123,12 +133,39 @@ def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -
             continue
         if line in ("batch start", "batch end", "save"):
             continue
-        # Hardware pin/peripheral maps that SITL always rejects (no GPIO on a
-        # host target). Skipping them changes nothing in the loaded config and
-        # shaves time off the load.
         if line.startswith(("resource ", "timer ", "dma ")):
             continue
         cmds.append(line)
+    return cmds
+
+
+def load_dump_over_cli(host: str, port: int, dump_text: str,
+                       framed: bool = False, progress_cb=None) -> None:
+    """Replay a ``dump all`` into SITL's CLI and persist it with ``save``.
+
+    Two CLI dialects exist, exactly as on real hardware (see
+    :func:`drone_check.cli_session.supports_framed_cli`):
+
+    * legacy raw ``#`` prompt (Betaflight < 4.5.4 / INAV) — enter CLI, send the
+      commands, ``save``;
+    * framed MSP-CLI (Betaflight >= 4.5.4 / 2025.x) — newer firmware ignores the
+      raw ``#`` byte, so each command is an ``STX..ETX`` frame instead.
+
+    ``progress_cb(sent, total)`` (if given) is called as the load proceeds.
+    """
+    cmds = _dump_commands(dump_text)
+    if framed:
+        _load_dump_framed(host, port, cmds, progress_cb)
+    else:
+        _load_dump_legacy(host, port, cmds, progress_cb)
+
+
+def _load_dump_legacy(host: str, port: int, cmds: list[str], progress_cb=None) -> None:
+    """Load a dump via the legacy raw-``#`` CLI (Betaflight < 4.5.4 / INAV).
+
+    Lines are sent in chunks well under SITL's 1400-byte RX buffer, draining the
+    echo between chunks for flow control.
+    """
     total = len(cmds)
 
     # Establish the CLI session with a few retries: right after a cold WSL boot
@@ -160,6 +197,64 @@ def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -
         _drain(sock, 3.0)
     finally:
         sock.close()
+
+
+def _connect_framed(host: str, port: int, attempts: int = 4) -> socket.socket:
+    """Open a TCP connection to SITL's framed MSP-CLI, validating the link.
+
+    No CLI mode is entered (newer firmware ignores the raw ``#`` byte). A
+    read-only ``version`` probe per attempt confirms the framed CLI is actually
+    answering before any config is sent — so a cold-WSL first-connection reset
+    can't silently drop a setting. Returns a socket ready for the load.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        sock = None
+        try:
+            sock = socket.create_connection((host, port), timeout=5)
+            cli = CliSession(SocketTransport(sock), idle_timeout=1.0, max_wait=8.0)
+            cli.command_framed("version")  # raises CliError if no ETX reply
+            sock.settimeout(0.2)
+            return sock
+        except (OSError, CliError) as exc:
+            last_exc = exc
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        time.sleep(0.5 * (attempt + 1))
+    raise SitlError(f"could not open SITL framed CLI on {host}:{port}: {last_exc}")
+
+
+def _load_dump_framed(host: str, port: int, cmds: list[str], progress_cb=None) -> None:
+    """Load a dump via the framed MSP-CLI (Betaflight >= 4.5.4 / 2025.x).
+
+    Each command is one ``STX..ETX`` frame; we wait for the framed reply before
+    sending the next, which also flow-controls the load (SITL's RX ring has no
+    backpressure). ``save`` writes the eeprom and reboots before it can send its
+    closing ETX, so it is sent raw and not awaited — the caller waits for the
+    process to exit.
+    """
+    total = len(cmds)
+    sock = _connect_framed(host, port)
+    transport = SocketTransport(sock)
+    cli = CliSession(transport, idle_timeout=1.0, max_wait=15.0)
+    try:
+        for i, cmd in enumerate(cmds, 1):
+            try:
+                cli.command_framed(cmd)
+            except CliError:
+                # A line SITL rejects may not return a clean ETX; tolerate it and
+                # keep going — the same lines are harmless on a host target.
+                pass
+            if progress_cb is not None:
+                progress_cb(i, total)
+        # `save` reboots before sending its closing ETX, so don't wait for one.
+        transport.write(STX + b"save" + LF + ETX)
+        time.sleep(0.5)
+    finally:
+        transport.close()
 
 
 def _wait_port(host: str, port: int, timeout: float) -> bool:
@@ -486,6 +581,7 @@ class SitlRunner:
                 self._progress("loading", "Loading configuration…", 0, 0, gen=gen)
                 load_dump_over_cli(
                     host, tcp, dump_text,
+                    framed=supports_framed_cli(version),
                     progress_cb=lambda sent, total: self._progress(
                         "loading", "Loading configuration…", sent, total, gen=gen),
                 )
