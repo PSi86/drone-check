@@ -107,8 +107,8 @@ It also performs two build prerequisites automatically:
 1. `drone-check serve`, open **http://127.0.0.1:8000/logs**.
 2. On a capture, click **View in Configurator**. A bar at the bottom shows live
    progress (checking → starting → loading X/Y → saving → starting → ready).
-   - First time for a capture: **~10–15 s** (the whole `dump all` is fed through
-     SITL's CLI).
+   - First time for a capture: **a few seconds** (mostly the two SITL boots and
+     the save/reboot; feeding the whole `dump all` through the CLI is ~1 s).
    - Same capture again: **near-instant** (the populated eeprom is cached).
 3. When ready, the bar shows the connect address. Open the Betaflight web
    Configurator (`app.betaflight.com`), enable **manual connection** and connect
@@ -163,12 +163,15 @@ no backpressure on firmware consumption. Pasting the whole ~33 KB dump at once
 would overwrite unprocessed bytes and **silently corrupt the loaded config** —
 unacceptable for an inspection tool. So the loader sends the dump in chunks under
 1400 bytes and waits for the firmware to finish each chunk before sending the
-next: on the legacy CLI it waits for the command echo; on the framed CLI it waits
-until SITL has acked every command in the chunk (one returned `STX..ETX` frame
-per command). A fixed time-based pause is **not** enough — it can elapse while
-SITL is still processing, so the next chunk overruns the ring and config lines
-(e.g. `serial`) are silently dropped. Lines SITL always rejects (`resource` /
-`timer` / `dma` pin maps) are skipped. Correctness was verified by sampling settings spread
+next: on the legacy CLI it waits for the command echo; on the framed CLI it
+packs many `LF`-separated commands into one `STX..ETX` frame and waits for that
+frame's single closing `ETX` (SITL runs the whole frame, then replies once). A
+fixed time-based pause is **not** enough — it can elapse while SITL is still
+processing, so the next chunk overruns the ring and config lines (e.g. `serial`)
+are silently dropped. Batching the framed CLI also keeps it fast: one command
+per frame would be gated by SITL's MSP-poll cadence (~20 ms/command, ~25 s for a
+full dump), whereas batched frames load it in ~1 s. Lines SITL always rejects
+(`resource` / `timer` / `dma` pin maps) are skipped. Correctness was verified by sampling settings spread
 across a real dump against the loaded SITL config.
 
 ### Caching
