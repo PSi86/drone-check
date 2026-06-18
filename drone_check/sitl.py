@@ -37,9 +37,25 @@ from pathlib import Path
 
 from .config import Settings
 
+# Spawn long-lived children (the WSL/SITL process and the websockify proxy) in
+# their own process group on Windows. Otherwise they share drone-check's console
+# process group and intercept/interfere with the console Ctrl+C — which broke the
+# server's graceful shutdown after a SITL session had run, and lingering orphans
+# kept breaking it across restarts. A new group never receives the console
+# Ctrl+C; we always stop these children explicitly via terminate()/pkill anyway.
+_NEW_PROCESS_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
 
 class SitlError(RuntimeError):
     """A SITL session could not be started; the reason is operator-facing."""
+
+
+class SitlCancelled(SitlError):
+    """A start() was superseded by a stop() or a newer start() and bailed out.
+
+    Not a real failure — the operator (or a newer request) asked for something
+    else, so the in-flight start simply stops without resurrecting any state.
+    """
 
 
 # ---- low-level CLI over TCP -------------------------------------------------
@@ -61,6 +77,32 @@ def _drain(sock: socket.socket, total: float = 1.5, idle: float = 0.3) -> bytes:
                 break
             time.sleep(0.02)
     return bytes(buf)
+
+
+def _connect_cli(host: str, port: int, attempts: int = 4) -> socket.socket:
+    """Open a TCP connection to SITL's UART1 and enter CLI mode, with retries.
+
+    Returns a socket already in CLI mode (the ``# `` prompt was seen). Right
+    after a cold WSL boot the localhost relay may reset the first connection;
+    each attempt reconnects from scratch, which is safe because the dump has
+    not been sent or saved yet.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            sock = socket.create_connection((host, port), timeout=5)
+            sock.sendall(b"#\r\n")  # enter CLI mode
+            time.sleep(0.4)
+            reply = _drain(sock, 1.5)
+            if b"#" in reply or b"CLI" in reply:
+                return sock
+            # Connected but no CLI prompt yet (SITL still booting): retry.
+            sock.close()
+            last_exc = SitlError("SITL CLI did not respond with a prompt")
+        except OSError as exc:
+            last_exc = exc
+        time.sleep(0.5 * (attempt + 1))
+    raise SitlError(f"could not open SITL CLI on {host}:{port}: {last_exc}")
 
 
 def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -> None:
@@ -89,12 +131,12 @@ def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -
         cmds.append(line)
     total = len(cmds)
 
-    sock = socket.create_connection((host, port), timeout=5)
+    # Establish the CLI session with a few retries: right after a cold WSL boot
+    # the WSL2 localhost relay can reset the very first connection (WinError
+    # 10053 / connection reset) before SITL's CLI is reachable. Retrying the
+    # handshake is safe because nothing has been sent or saved yet.
+    sock = _connect_cli(host, port)
     try:
-        sock.sendall(b"#\r\n")  # enter CLI mode
-        time.sleep(0.4)
-        _drain(sock, 1.5)
-
         # Send a chunk, then wait for its echo before sending the next: the echo
         # proves SITL's CLI task drained the RX buffer, so the outstanding bytes
         # never exceed one chunk (kept well under the 1400-byte RX buffer — sending
@@ -171,15 +213,37 @@ class SitlRunner:
         self._sent = 0
         self._total = 0
         self._starting = False
+        # Lifecycle generation: every start() claims a generation; stop() (or a
+        # newer start()) bumps it. A long-running start() in a background thread
+        # checks its generation between steps and bails the moment it is
+        # superseded, so a concurrent stop() reliably wins instead of the
+        # in-flight start() resurrecting the "starting" state. (See _claim_gen.)
+        self._gen = 0
+        # WSL ownership: drone-check starts WSL lazily on the first session and
+        # only terminates it on shutdown if it was the one to bring it up — never
+        # killing a WSL the operator already had running for other work.
+        self._wsl_ownership_checked = False
+        self._we_started_wsl = False
+        # Whether a SITL session was ever started this run. If not, shutdown() is
+        # a no-op so it never cold-starts WSL just to pkill nothing.
+        self._started_once = False
 
     def _progress(self, phase: str, detail: str = "", sent: int = 0,
-                  total: int = 0, starting: bool = True) -> None:
+                  total: int = 0, starting: bool = True,
+                  gen: int | None = None) -> bool:
+        """Update the progress state. When ``gen`` is given, the update is
+        applied only if that generation is still current; returns whether it
+        was applied. This lets a superseded start() stop touching the state
+        atomically, so a concurrent stop() is not undone."""
         with self._lock:
+            if gen is not None and self._gen != gen:
+                return False
             self._phase = phase
             self._detail = detail
             self._sent = sent
             self._total = total
             self._starting = starting
+            return True
 
     # -- helpers ----------------------------------------------------------
 
@@ -187,7 +251,12 @@ class SitlRunner:
         cmd = ["wsl", "-d", self.s.sitl_distro, "--", "bash", "-lc", script]
         if capture:
             return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Detach stdin (an inherited console stdin is unusable under the web
+        # server and can block startup) and put the child in its own process
+        # group so it does not swallow the console Ctrl+C.
+        return subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=_NEW_PROCESS_GROUP)
 
     def _binary_path(self, version: str) -> str:
         # WSL path; ~ expands inside `bash -lc`.
@@ -220,11 +289,37 @@ class SitlRunner:
         if res.returncode != 0 or "ok" not in (res.stdout or ""):
             raise SitlError(f"WSL distro '{self.s.sitl_distro}' not available")
 
+    def _wsl_running(self) -> bool:
+        """Whether our distro is already running. Does NOT start it (``wsl -l
+        --running`` only lists, it never boots the VM)."""
+        try:
+            res = subprocess.run(["wsl", "-l", "-q", "--running"],
+                                 capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        out = res.stdout or b""
+        # wsl.exe prints UTF-16LE on Windows; fall back to utf-8 elsewhere.
+        text = out.decode("utf-16-le", "ignore")
+        if self.s.sitl_distro not in text:
+            text = out.decode("utf-8", "ignore")
+        names = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return self.s.sitl_distro in names
+
+    def _note_wsl_ownership(self) -> None:
+        """On the first SITL start of this run, remember whether WSL was already
+        running. If not, drone-check is bringing it up and must also tear it down
+        on shutdown (see shutdown())."""
+        if self._wsl_ownership_checked:
+            return
+        self._wsl_ownership_checked = True
+        self._we_started_wsl = not self._wsl_running()
+
     # -- lifecycle --------------------------------------------------------
 
     def status(self) -> SitlStatus:
         running = self._sitl is not None and self._sitl.poll() is None
         with self._lock:
+            active = running or self._starting
             return SitlStatus(
                 running=running,
                 starting=self._starting,
@@ -232,12 +327,26 @@ class SitlRunner:
                 detail=self._detail,
                 sent=self._sent,
                 total=self._total,
-                version=self._version if running else None,
-                capture_id=self._capture_id if running else None,
+                # Report which capture is involved while *starting* too, so the
+                # UI can say what the "cancel" button would cancel.
+                version=self._version if active else None,
+                capture_id=self._capture_id if active else None,
                 connect_url=f"ws://127.0.0.1:{self.s.sitl_ws_port}" if running else None,
             )
 
-    def stop(self) -> None:
+    def _claim_gen(self) -> int:
+        """Start a new lifecycle generation and return its id."""
+        with self._lock:
+            self._gen += 1
+            return self._gen
+
+    def _is_current(self, gen: int) -> bool:
+        with self._lock:
+            return self._gen == gen
+
+    def _teardown(self) -> None:
+        """Kill the proxy + SITL and drop the handles. Does not touch the
+        generation or progress — callers decide what state to report."""
         for proc in (self._proxy, self._sitl):
             if proc is not None and proc.poll() is None:
                 proc.terminate()
@@ -253,23 +362,104 @@ class SitlRunner:
             self._wsl("pkill -x betaflight_SITL", capture=True, timeout=15)
         except (OSError, subprocess.SubprocessError):
             pass
+
+    def stop(self) -> None:
+        # Bump the generation first so any start() running in another thread
+        # sees itself superseded and stops driving the progress state.
+        # Note: this ends the SITL *session* only — it never stops WSL itself,
+        # which stays up for the next "open in Configurator" until drone-check
+        # exits (see shutdown()).
+        self._claim_gen()
+        self._teardown()
         self._progress("idle", "", starting=False)
 
+    def shutdown(self) -> None:
+        """Called once when drone-check exits: end the session and, if we were
+        the ones who started WSL, terminate that distro too. Uses ``--terminate
+        <distro>`` (not ``--shutdown``) so other distros, e.g. docker-desktop,
+        keep running."""
+        if not self._started_once:
+            return  # SITL never ran — nothing to tear down, don't poke WSL
+        self.stop()
+        if self._we_started_wsl:
+            try:
+                subprocess.run(["wsl", "--terminate", self.s.sitl_distro],
+                               capture_output=True, timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self._we_started_wsl = False
+
+    def _ensure_current(self, gen: int, loader: "subprocess.Popen | None" = None) -> None:
+        """Abort the in-flight start() if its generation was superseded.
+
+        A concurrent stop() (or a newer start()) bumps the generation; when that
+        happens this start() must not keep launching processes or driving the
+        progress state. Clean up what we created and raise so the caller bails.
+        """
+        if self._is_current(gen):
+            return
+        if loader is not None and loader.poll() is None:
+            try:
+                loader.terminate()
+            except OSError:
+                pass
+        self._teardown()
+        raise SitlCancelled("SITL start was cancelled")
+
     def start(self, capture_id: str, version: str, dump_text: str) -> SitlStatus:
-        """Load a capture into a fresh SITL instance and expose it for the Configurator."""
+        """Load a capture into a fresh SITL instance and expose it for the Configurator.
+
+        Runs in a worker thread; a concurrent stop() (or a newer start()) bumps
+        the lifecycle generation, so this bails cleanly as SitlCancelled instead
+        of leaving the UI stuck on a transient "starting" state.
+        """
         if not version:
             raise SitlError("capture has no firmware version — cannot pick a SITL build")
-        self._progress("checking", "Checking WSL and SITL binary…")
+        # Claim a generation: this supersedes any previous in-flight start() and
+        # lets us detect a stop() that arrives while we run in a worker thread.
+        gen = self._claim_gen()
+        try:
+            return self._run_start(gen, capture_id, version, dump_text)
+        except SitlCancelled:
+            raise
+        except Exception as exc:
+            # If a stop()/newer start() superseded us, any error (e.g. the killed
+            # SITL dropping the CLI connection mid-load) is just cancellation.
+            if not self._is_current(gen):
+                self._teardown()
+                raise SitlCancelled("SITL start was cancelled") from exc
+            # A genuine failure: clean up and surface a clear operator message
+            # instead of letting an unexpected exception become an HTTP 500.
+            self._teardown()
+            self._progress("idle", "", starting=False, gen=gen)
+            if isinstance(exc, SitlError):
+                raise
+            raise SitlError(f"SITL start failed: {exc}") from exc
+
+    def _run_start(self, gen: int, capture_id: str, version: str,
+                   dump_text: str) -> SitlStatus:
+        self._started_once = True
+        self._progress("checking", "Starting WSL and checking SITL binary…", gen=gen)
+        # Before the first WSL call, record whether WSL was already running so we
+        # only terminate it on shutdown if drone-check started it.
+        self._note_wsl_ownership()
         self._check_wsl()
         if not self.binary_available(version):
-            self._progress("idle", "", starting=False)
+            self._progress("idle", "", starting=False, gen=gen)
             raise SitlError(
                 f"no SITL binary for firmware {version}; build it once with "
                 f"`bash scripts/build_sitl.sh {version}` (inside WSL)"
             )
 
-        # Only one session at a time. (stop() resets progress, so re-mark after.)
-        self.stop()
+        # Only one session at a time: tear down the previous one. (We already own
+        # the current generation, so use _teardown(), not stop(), which would
+        # bump the generation and invalidate us.)
+        self._ensure_current(gen)
+        self._teardown()
+        # Record what we are starting so status() can report it while starting
+        # (teardown cleared these; set them after it).
+        self._capture_id = capture_id
+        self._version = version
 
         host = "127.0.0.1"
         tcp = self.s.sitl_tcp_port
@@ -282,28 +472,33 @@ class SitlRunner:
         # straight to serving. The cache is invalidated automatically when the SITL
         # binary is newer than the marker (e.g. after rebuilding with new features).
         if not self._cache_valid(marker, elf):
-            self._progress("starting", "Starting SITL (load phase)…")
+            self._ensure_current(gen)
+            self._progress("starting", "Starting SITL (load phase)…", gen=gen)
             loader = self._wsl(f"rm -rf {run_dir} && mkdir -p {run_dir} && cd {run_dir} "
                                f"&& exec {elf} >/dev/null 2>&1")
             try:
                 if not _wait_port(host, tcp, timeout=self.s.sitl_boot_timeout):
-                    self.stop()
+                    self._ensure_current(gen, loader)
+                    self._teardown()
+                    self._progress("idle", "", starting=False, gen=gen)
                     raise SitlError("SITL did not start (load phase)")
-                self._progress("loading", "Loading configuration…", 0, 0)
+                self._ensure_current(gen, loader)
+                self._progress("loading", "Loading configuration…", 0, 0, gen=gen)
                 load_dump_over_cli(
                     host, tcp, dump_text,
                     progress_cb=lambda sent, total: self._progress(
-                        "loading", "Loading configuration…", sent, total),
+                        "loading", "Loading configuration…", sent, total, gen=gen),
                 )
             finally:
                 # `save` reboots SITL; wait for the process/port to go away.
                 self._progress("saving", "Saving and rebooting SITL…",
-                               self._sent, self._total)
+                               self._sent, self._total, gen=gen)
                 if loader.poll() is None:
                     try:
                         loader.wait(timeout=10)
                     except subprocess.TimeoutExpired:
                         loader.terminate()
+            self._ensure_current(gen)
             # Give the OS a moment to release the port after the reboot/exit.
             for _ in range(40):
                 if _port_free(host, tcp):
@@ -316,24 +511,37 @@ class SitlRunner:
                 pass
 
         # Phase 2: serve from the populated eeprom; this is the session SITL.
-        self._progress("starting2", "Starting SITL from saved configuration…")
+        self._ensure_current(gen)
+        self._progress("starting2", "Starting SITL from saved configuration…", gen=gen)
         self._sitl = self._wsl(f"cd {run_dir} && exec {elf} >/dev/null 2>&1")
         if not _wait_port(host, tcp, timeout=self.s.sitl_boot_timeout):
-            self.stop()
+            self._ensure_current(gen)
+            self._teardown()
+            self._progress("idle", "", starting=False, gen=gen)
             raise SitlError("SITL did not start (serve phase)")
 
         # websockify proxy so the WebSocket-only web Configurator can connect.
-        self._progress("proxy", "Starting Configurator proxy…")
+        self._ensure_current(gen)
+        self._progress("proxy", "Starting Configurator proxy…", gen=gen)
         self._proxy = subprocess.Popen(
             [sys.executable, "-m", "websockify",
              f"127.0.0.1:{self.s.sitl_ws_port}", f"127.0.0.1:{tcp}"],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=_NEW_PROCESS_GROUP,
         )
         if not _wait_port(host, self.s.sitl_ws_port, timeout=10):
-            self.stop()
+            self._ensure_current(gen)
+            self._teardown()
+            self._progress("idle", "", starting=False, gen=gen)
             raise SitlError("websockify proxy did not start (is the 'websockify' package installed?)")
 
+        # Only publish the live session if we are still the current generation.
+        self._ensure_current(gen)
         self._version = version
         self._capture_id = capture_id
-        self._progress("ready", "Ready", starting=False)
+        if not self._progress("ready", "Ready", starting=False, gen=gen):
+            # A stop()/newer start() landed between the check and here; bail.
+            self._teardown()
+            raise SitlCancelled("SITL start was cancelled")
         return self.status()

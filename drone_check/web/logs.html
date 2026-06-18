@@ -21,6 +21,10 @@
     header nav a.active { color: var(--text); font-weight: 600; }
     header nav a:hover { color: var(--text); }
     header .count { margin-left: auto; color: var(--muted); font-size: 13px; }
+    header .shutdown { background: #2a1212; color: #f3a0a0; border: 1px solid var(--red);
+      border-radius: 6px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+    header .shutdown:hover { background: #3a1818; }
+    header .shutdown:disabled { opacity: .5; cursor: default; }
     main { padding: 24px; }
     .filters { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
     .filters input[type=search], .filters select {
@@ -52,7 +56,10 @@
     .actions button:hover:not(:disabled) { border-color: var(--accent); }
     .actions button:disabled { opacity: .45; cursor: not-allowed; }
     .empty { color: var(--muted); padding: 40px; text-align: center; }
-    .hidden { display: none; }
+    /* Must win over component rules like `.sitl { display: flex }` that are
+       declared later with equal specificity — otherwise hidden elements
+       (the SITL footer bar, its sub-parts) never actually hide. */
+    .hidden { display: none !important; }
     code { color: #c7d2fe; }
     .sitl { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
             border-top: 1px solid var(--accent); padding: 14px 24px; display: flex;
@@ -84,6 +91,7 @@
       <a href="/logs" class="active">Logs</a>
     </nav>
     <span class="count" id="count"></span>
+    <button id="shutdownBtn" class="shutdown" title="drone-check-Server beenden">Server beenden</button>
   </header>
 
   <main>
@@ -127,6 +135,7 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let CAPTURES = [];
+    let SITL_ENABLED = true;  // gates the "Im Configurator" button; set from /api/sitl/status
 
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -165,7 +174,7 @@
         : c.firmware_hash_approved === false ? "✗ not approved" : "—";
       const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
       const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
-      const cfgBtn = c.has_dump
+      const cfgBtn = (SITL_ENABLED && c.has_dump)
         ? `<button data-cfg="${esc(c.id)}" data-ver="${esc((c.firmware||{}).version||"")}">Im Configurator</button>` : "";
       return `<tr>
         <td>${verdictBadge(c)}</td>
@@ -233,10 +242,20 @@
         prog.classList.add("hidden");
         stop.textContent = "SITL stoppen"; stop.disabled = false;
         bar.classList.remove("hidden");
+      } else if (st && st.stopping) {
+        // Local-only transient while we wait for /api/sitl/stop to return.
+        $("sitlTitle").textContent = "Stoppe SITL…";
+        $("sitlConnect").classList.add("hidden");
+        $("sitlOpen").classList.add("hidden");
+        $("sitlNote").classList.add("hidden");
+        prog.classList.remove("hidden"); prog.classList.add("indet"); fill.style.width = "";
+        stop.textContent = "Stoppe…"; stop.disabled = true;
+        bar.classList.remove("hidden");
       } else if (st && st.starting) {
         let label = PHASE_LABELS[st.phase] || "Starte SITL…";
         if (st.phase === "loading" && st.total) label += ` ${st.sent}/${st.total}`;
-        $("sitlTitle").textContent = label;
+        // Name the capture so it is clear what "Abbrechen" would cancel.
+        $("sitlTitle").textContent = (st.capture_id ? `${st.capture_id} — ` : "") + label;
         $("sitlConnect").classList.add("hidden");
         $("sitlOpen").classList.add("hidden");
         $("sitlNote").classList.add("hidden");
@@ -247,7 +266,7 @@
         } else {
           prog.classList.add("indet"); fill.style.width = "";
         }
-        stop.textContent = "Abbrechen"; stop.disabled = false;
+        stop.textContent = "Start abbrechen"; stop.disabled = false;
         bar.classList.remove("hidden");
       } else {
         stopPolling();
@@ -266,22 +285,31 @@
     }
     function stopPolling() { if (sitlPoll) { clearInterval(sitlPoll); sitlPoll = null; } }
 
+    // Epoch guard: a stop() (or a new open) bumps this so a slow, now-obsolete
+    // start response can't re-show the bar after the user already stopped.
+    let sitlEpoch = 0;
+
     async function openConfigurator(id, ver, btn) {
       const prev = btn.textContent;
+      const epoch = ++sitlEpoch;
       btn.disabled = true; btn.textContent = "Starte SITL…";
       renderSitl({ starting: true, phase: "checking" });
       startPolling();
       try {
         const r = await fetch(`/api/captures/${encodeURIComponent(id)}/configurator`, { method: "POST" });
         const d = await r.json().catch(() => ({}));
+        if (epoch !== sitlEpoch) return;  // superseded by a stop / newer open
         stopPolling();
         if (d.ok) {
           renderSitl({ running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url });
+        } else if (d.cancelled) {
+          renderSitl({ running: false });  // we asked it to stop — no error
         } else {
           renderSitl({ running: false });
           alert("SITL konnte nicht gestartet werden:\n" + (d.reason || r.status));
         }
       } catch (e) {
+        if (epoch !== sitlEpoch) return;
         stopPolling(); renderSitl({ running: false });
         alert("Fehler beim Starten von SITL: " + e);
       } finally {
@@ -290,11 +318,16 @@
     }
 
     async function stopSitl() {
-      const stop = $("sitlStop");
-      stop.disabled = true; stop.textContent = "Stoppe…";
+      sitlEpoch++;  // invalidate any in-flight open response
       stopPolling();
+      renderSitl({ stopping: true });
       try { await fetch("/api/sitl/stop", { method: "POST" }); } catch (e) {}
-      renderSitl({ running: false });
+      // Reflect the real post-stop state rather than assuming, so the bar can
+      // never get wedged on "Stoppe…" if anything unexpected happened.
+      try {
+        const st = await (await fetch("/api/sitl/status")).json();
+        renderSitl(st);
+      } catch (e) { renderSitl({ running: false }); }
     }
     $("sitlStop").onclick = stopSitl;
 
@@ -302,20 +335,37 @@
       const r = await fetch("/api/captures");
       const data = await r.json().catch(() => ({ captures: [] }));
       CAPTURES = data.captures || [];
-      fillVariants();
-      render();
-      // Reflect any already-running or starting SITL session.
+      // Learn whether the Configurator/SITL feature is enabled (and reflect any
+      // already-running session) BEFORE rendering, so the button is only shown
+      // when the feature is on.
       try {
         const st = await (await fetch("/api/sitl/status")).json();
+        SITL_ENABLED = st.enabled !== false;
+        fillVariants();
+        render();
         renderSitl(st);
         if (st.starting) startPolling();
-      } catch (e) {}
+      } catch (e) {
+        fillVariants();
+        render();
+      }
+    }
+
+    async function shutdownServer() {
+      if (!confirm("drone-check-Server wirklich beenden?")) return;
+      const btn = $("shutdownBtn");
+      btn.disabled = true; btn.textContent = "Beende…";
+      try { await fetch("/api/shutdown", { method: "POST" }); } catch (e) {}
+      document.body.innerHTML =
+        '<p style="padding:24px;font-size:16px">drone-check wurde beendet. '
+        + 'Du kannst dieses Fenster schließen.</p>';
     }
 
     $("q").addEventListener("input", render);
     $("verdict").addEventListener("change", render);
     $("variant").addEventListener("change", render);
     $("refresh").onclick = load;
+    $("shutdownBtn").onclick = shutdownServer;
     load();
   </script>
 </body>

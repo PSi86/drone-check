@@ -27,8 +27,9 @@ class FakeSock:
 def fake_socket(monkeypatch):
     sock = FakeSock()
     monkeypatch.setattr(sitl.socket, "create_connection", lambda *a, **k: sock)
-    # Skip the real read/wait loop — we only care about what we send.
-    monkeypatch.setattr(sitl, "_drain", lambda *a, **k: b"")
+    # Skip the real read/wait loop; return a CLI prompt so the handshake in
+    # _connect_cli is satisfied on the first attempt. We only care what we send.
+    monkeypatch.setattr(sitl, "_drain", lambda *a, **k: b"\r\n# ")
     return sock
 
 
@@ -67,6 +68,38 @@ def test_load_dump_filters_framing_and_drives_save(fake_socket):
     assert fake_socket.closed
 
 
+def test_connect_cli_retries_after_reset(monkeypatch):
+    # The first connection is reset (as the cold-WSL localhost relay can do);
+    # the second succeeds and reaches the CLI prompt.
+    attempts = {"n": 0}
+
+    def flaky_connect(*a, **k):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise ConnectionResetError("relay reset")
+        return FakeSock()
+
+    monkeypatch.setattr(sitl.socket, "create_connection", flaky_connect)
+    monkeypatch.setattr(sitl, "_drain", lambda *a, **k: b"\r\n# ")
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+
+    sock = sitl._connect_cli("127.0.0.1", 5761)
+    assert attempts["n"] == 2
+    assert sock.sent.startswith(b"#")
+
+
+def test_connect_cli_fails_closed_after_attempts(monkeypatch):
+    def always_reset(*a, **k):
+        raise ConnectionAbortedError("aborted")
+
+    monkeypatch.setattr(sitl.socket, "create_connection", always_reset)
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+
+    with pytest.raises(sitl.SitlError) as exc:
+        sitl._connect_cli("127.0.0.1", 5761, attempts=3)
+    assert "could not open SITL CLI" in str(exc.value)
+
+
 def test_binary_available_false_without_wsl(monkeypatch):
     runner = sitl.SitlRunner(Settings())
 
@@ -91,3 +124,81 @@ def test_start_requires_version(monkeypatch):
     runner = sitl.SitlRunner(Settings())
     with pytest.raises(sitl.SitlError):
         runner.start("cap", "", "set x = 1\n")
+
+
+def test_progress_ignores_superseded_generation():
+    runner = sitl.SitlRunner(Settings())
+    gen = runner._claim_gen()
+    assert runner._progress("loading", starting=True, gen=gen) is True
+    assert runner.status().starting is True
+    runner._claim_gen()  # a stop()/newer start() supersedes `gen`
+    # The stale update is dropped, so it cannot resurrect the "starting" state.
+    assert runner._progress("loading", starting=True, gen=gen) is False
+
+
+def test_note_wsl_ownership_marks_started_when_cold(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    monkeypatch.setattr(runner, "_wsl_running", lambda: False)
+    runner._note_wsl_ownership()
+    assert runner._we_started_wsl is True
+    # Idempotent: a later call does not flip the verdict.
+    monkeypatch.setattr(runner, "_wsl_running", lambda: True)
+    runner._note_wsl_ownership()
+    assert runner._we_started_wsl is True
+
+
+def test_note_wsl_ownership_leaves_preexisting_wsl_alone(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    monkeypatch.setattr(runner, "_wsl_running", lambda: True)
+    runner._note_wsl_ownership()
+    assert runner._we_started_wsl is False
+
+
+def test_shutdown_noop_when_sitl_never_started(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    cmds = []
+    monkeypatch.setattr(sitl.subprocess, "run",
+                        lambda cmd, *a, **k: cmds.append(cmd))
+    # SITL never ran this session → shutdown() must not poke WSL at all.
+    runner.shutdown()
+    assert cmds == []
+
+
+def test_shutdown_terminates_wsl_only_if_we_started_it(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner._started_once = True  # a SITL session ran this run
+    monkeypatch.setattr(runner, "_teardown", lambda: None)
+    cmds = []
+    monkeypatch.setattr(sitl.subprocess, "run",
+                        lambda cmd, *a, **k: cmds.append(cmd))
+
+    # We did not start WSL → leave it running.
+    runner._we_started_wsl = False
+    runner.shutdown()
+    assert not any("--terminate" in c for c in cmds)
+
+    # We started WSL → terminate exactly our distro (not --shutdown).
+    cmds.clear()
+    runner._we_started_wsl = True
+    runner.shutdown()
+    terminate = [c for c in cmds if "--terminate" in c]
+    assert terminate and terminate[0] == ["wsl", "--terminate", runner.s.sitl_distro]
+    assert runner._we_started_wsl is False
+
+
+def test_start_bails_when_stopped_midway(monkeypatch):
+    # A concurrent stop() arrives while start() is still doing its WSL checks;
+    # start() must bail with SitlCancelled and leave the state idle (not stuck
+    # on "starting"), so the UI does not hang.
+    runner = sitl.SitlRunner(Settings())
+    monkeypatch.setattr(runner, "_check_wsl", lambda: runner.stop())
+    monkeypatch.setattr(runner, "binary_available", lambda v: True)
+    monkeypatch.setattr(runner, "_teardown", lambda: None)
+
+    with pytest.raises(sitl.SitlCancelled):
+        runner.start("cap", "4.4.0", "set x = 1\n")
+
+    st = runner.status()
+    assert st.starting is False
+    assert st.running is False
+    assert st.phase == "idle"

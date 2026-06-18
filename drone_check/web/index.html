@@ -23,6 +23,10 @@
     header .status { color: var(--muted); font-size: 13px; }
     .demo-btn { margin-left: auto; background: var(--accent); color: #fff;
                 border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; }
+    .shutdown { background: var(--red-bg); color: #f3a0a0; border: 1px solid var(--red);
+                border-radius: 6px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+    .shutdown:hover { background: #4a1414; }
+    .shutdown:disabled { opacity: .5; cursor: default; }
     main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 24px; }
     .card { background: var(--panel); border: 1px solid var(--line);
             border-radius: 10px; padding: 18px; }
@@ -57,7 +61,7 @@
                    background: #0c0e12; color: var(--text); }
     .pilot button { background: var(--green); color:#fff; border:0; padding: 8px 14px;
                     border-radius: 6px; cursor: pointer; }
-    .hidden { display: none; }
+    .hidden { display: none !important; }
     code { color: #c7d2fe; }
     .verdict.error { background: #2a1e10; border-color: #b8791f; color: #f0c879; }
     .log { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto;
@@ -81,6 +85,7 @@
     </nav>
     <span class="status" id="conn">connecting…</span>
     <button class="demo-btn" id="demo">Run demo</button>
+    <button class="shutdown" id="shutdownBtn" title="drone-check-Server beenden">Server beenden</button>
   </header>
 
   <main>
@@ -296,6 +301,17 @@
     $("pilotSave").onclick = applyOperatorPilot;
     $("pilotName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); applyOperatorPilot(); } });
     $("demo").onclick = () => fetch("/api/demo", { method: "POST" });
+
+    async function shutdownServer() {
+      if (!confirm("drone-check-Server wirklich beenden?")) return;
+      const btn = $("shutdownBtn");
+      btn.disabled = true; btn.textContent = "Beende…";
+      try { await fetch("/api/shutdown", { method: "POST" }); } catch (e) {}
+      document.body.innerHTML =
+        '<p style="padding:24px;font-size:16px">drone-check wurde beendet. '
+        + 'Du kannst dieses Fenster schließen.</p>';
+    }
+    $("shutdownBtn").onclick = shutdownServer;
   </script>
 </body>
 </html>
