@@ -37,6 +37,11 @@ class Settings:
     connect_debounce: float = 3.0
     disconnect_debounce: float = 3.0
 
+    # If a capture fails while the drone stays plugged in, retry this many extra
+    # times before giving up (the drone must be unplugged + replugged to try
+    # again). Prevents an endlessly-failing drone from looping forever.
+    capture_max_retries: int = 2
+
     # When set, raw serial traffic is teed to <debug_dir>/<port>-<time>.log.
     debug_dir: Path | None = None
 
@@ -98,6 +103,7 @@ def load_settings(path: Path) -> Settings:
     s.cli_max_wait = float(data.get("cli_max_wait", s.cli_max_wait))
     s.connect_debounce = float(data.get("connect_debounce", s.connect_debounce))
     s.disconnect_debounce = float(data.get("disconnect_debounce", s.disconnect_debounce))
+    s.capture_max_retries = int(data.get("capture_max_retries", s.capture_max_retries))
     if data.get("debug_dir"):
         s.debug_dir = Path(data["debug_dir"])
     s.log_list_length = int(data.get("log_list_length", s.log_list_length))

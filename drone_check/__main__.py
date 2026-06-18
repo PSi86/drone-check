@@ -75,6 +75,42 @@ def cmd_ports(args: argparse.Namespace) -> int:
     return 0
 
 
+def _install_stop_on_enter(server, on_stop=None):
+    """Stop the server cleanly when the operator presses Enter.
+
+    Windows PowerShell 5.1 does not reliably deliver Ctrl+C to a child program,
+    so Enter (typed stdin always reaches the foreground program) is a dependable
+    alternative. This triggers the SAME graceful shutdown as Ctrl+C — it sets
+    uvicorn's should_exit, so the app lifespan shutdown runs (no process kill).
+    Only enabled on an interactive TTY; DRONE_CHECK_STOP_ON_STDIN=1 forces it on
+    for tests. Returns the reader thread (or None if not enabled).
+    """
+    import os
+    import threading
+
+    stream = sys.stdin
+    forced = os.environ.get("DRONE_CHECK_STOP_ON_STDIN") == "1"
+    if stream is None or (not forced and not stream.isatty()):
+        return None
+
+    def _stop() -> None:
+        print("\nStopping drone-check…", file=sys.stderr, flush=True)
+        server.should_exit = True  # graceful: uvicorn runs the lifespan shutdown
+
+    action = on_stop or _stop
+
+    def _reader() -> None:
+        try:
+            stream.readline()  # blocks until Enter (or EOF on a closed stdin)
+        except Exception:
+            pass
+        action()
+
+    thread = threading.Thread(target=_reader, daemon=True)
+    thread.start()
+    return thread
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -82,7 +118,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     config = load_config(args.config)
     app = create_app(config, demo=args.demo)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    # Three clean ways to stop, all triggering uvicorn's graceful shutdown (which
+    # runs the app lifespan shutdown — ending any SITL session and terminating the
+    # WSL distro we started): Ctrl+C (where the terminal delivers it; reliable in
+    # cmd.exe, flaky in Windows PowerShell 5.1), pressing Enter here, or the
+    # "Server beenden" button in the web UI. timeout_graceful_shutdown caps the
+    # wait on open connections so the clean stop can't hang.
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=args.host, port=args.port, log_level="info",
+        timeout_graceful_shutdown=10,
+    ))
+    app.state.uvicorn_server = server  # lets POST /api/shutdown stop it cleanly
+    _install_stop_on_enter(server)
+    server.run()
     return 0
 
 
