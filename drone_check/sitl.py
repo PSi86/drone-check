@@ -256,33 +256,39 @@ def _read_etx_acks(sock: socket.socket, n: int,
 def _load_dump_framed(host: str, port: int, cmds: list[str], progress_cb=None) -> None:
     """Load a dump via the framed MSP-CLI (Betaflight >= 4.5.4 / 2025.x).
 
-    Each command is wrapped in one ``STX..ETX`` frame. Frames are sent in chunks
-    kept under SITL's 1400-byte RX ring (which has no backpressure and silently
-    overwrites unread bytes), and **after every chunk we wait until SITL has
-    acked all of that chunk's commands** (one returned ETX per command) before
-    sending the next. That is true flow control: a fixed time-based drain can
-    return while SITL is still mid-processing, so the next chunk overruns the
-    ring and config lines (e.g. ``serial``) are silently lost — unacceptable for
-    an inspection tool. Counting acks is both correct and fast (it follows
-    SITL's real processing rate). ``save`` reboots before it can send its closing
-    ETX, so it is sent without waiting — the caller waits for the process to exit.
+    SITL's framed CLI runs *every* LF-separated line inside one ``STX..ETX``
+    frame and answers with a single closing ETX, so we pack many commands into
+    each frame (kept under SITL's 1400-byte RX ring, which has no backpressure
+    and silently overwrites unread bytes) and wait for that one ETX before
+    sending the next frame. Waiting for the ETX is true flow control — the frame
+    is fully processed before the next is sent, so the ring never overruns and
+    no config line is silently lost.
+
+    Batching is what makes this fast: one command per frame is correct but ~30x
+    slower, because each frame is gated by SITL's MSP-poll cadence (~20 ms) — a
+    ~1200-line dump then takes ~25 s, versus ~1 s when batched. ``save`` reboots
+    before it can send its closing ETX, so it is sent without waiting; the caller
+    waits for the process to exit.
     """
     total = len(cmds)
     sock = _connect_framed(host, port)
     try:
         i = 0
-        chunk_limit = 1024  # < 1400-byte RX buffer, incl. STX/LF/ETX framing
+        frame_limit = 1024  # < 1400-byte RX buffer, incl. STX/LF/ETX framing
         while i < total:
-            n = 0
-            chunk = bytearray()
-            while i < total and len(chunk) < chunk_limit:
-                chunk += STX + cmds[i].encode("utf-8", "replace") + LF + ETX
+            frame = bytearray(STX)
+            while i < total:
+                line = cmds[i].encode("utf-8", "replace") + LF
+                # Leave room for the closing ETX; always include at least one
+                # line even if it alone would exceed the soft limit.
+                if len(frame) + len(line) + 1 > frame_limit and len(frame) > 1:
+                    break
+                frame += line
                 i += 1
-                n += 1
-            sock.sendall(chunk)
-            # Block until all n commands in this chunk are acked, so the RX ring
-            # is drained before the next chunk is sent (no silent overflow).
-            _read_etx_acks(sock, n)
+            frame += ETX
+            sock.sendall(frame)
+            # One closing ETX per frame proves SITL ran the whole batch.
+            _read_etx_acks(sock, 1)
             if progress_cb is not None:
                 progress_cb(i, total)
 

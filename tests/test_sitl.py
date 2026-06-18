@@ -102,11 +102,11 @@ class FramedFakeSock:
         self.closed = True
 
 
-def test_load_dump_framed_uses_stx_etx_and_save(monkeypatch):
+def test_load_dump_framed_batches_commands_and_saves(monkeypatch):
     sock = FramedFakeSock()
     monkeypatch.setattr(sitl.socket, "create_connection", lambda *a, **k: sock)
     monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
-    # The framed load only cares what we send; skip the real inter-chunk drains.
+    # The framed load only cares what we send; skip the real save drain.
     monkeypatch.setattr(sitl, "_drain", lambda *a, **k: b"")
 
     dump = "\n".join([
@@ -124,10 +124,14 @@ def test_load_dump_framed_uses_stx_etx_and_save(monkeypatch):
     sent = bytes(sock.sent)
     # The link is validated with a read-only framed `version` probe first.
     assert b"\x02version\x0a\x03" in sent
-    # Real config lines are sent as STX..ETX frames, not raw newline commands.
-    assert b"\x02set craft_name = U250_FPV\x0a\x03" in sent
-    assert b"\x02board_name BETAFPVF405\x0a\x03" in sent
-    # `save` is driven exactly once, as a frame, to persist + reboot.
+    # Commands are sent inside STX..ETX frames, LF-separated, many per frame.
+    assert b"set craft_name = U250_FPV" in sent
+    assert b"board_name BETAFPVF405" in sent
+    # Batched, NOT one frame per command: the two config lines above fit one
+    # frame, so the whole load is version + one data frame + save = 3 frames
+    # (3 ETX), far fewer than one-per-command would give.
+    assert sent.count(b"\x03") <= 4
+    # `save` is driven exactly once, as its own frame, to persist + reboot.
     assert b"\x02save\x0a\x03" in sent
     # The framed CLI never enters raw `#` mode, and framing/comments/HW maps are
     # dropped just like the legacy path.
