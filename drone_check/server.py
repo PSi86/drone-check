@@ -244,6 +244,7 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
                 "type": "config",
                 "allow_manual_pilot": config.settings.allow_manual_pilot,
                 "log_list_length": config.settings.log_list_length,
+                "demo": demo,
             }
         )
         await ws.send_json({"type": "log_batch", "entries": applog.recent()})

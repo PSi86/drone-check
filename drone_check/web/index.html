@@ -20,8 +20,8 @@
     header nav a { color: var(--muted); text-decoration: none; font-size: 14px; }
     header nav a.active { color: var(--text); font-weight: 600; }
     header nav a:hover { color: var(--text); }
-    header .status { color: var(--muted); font-size: 13px; }
-    .demo-btn { margin-left: auto; background: var(--accent); color: #fff;
+    header .status { margin-left: auto; color: var(--muted); font-size: 13px; }
+    .demo-btn { background: var(--accent); color: #fff;
                 border: 0; padding: 8px 14px; border-radius: 6px; cursor: pointer; }
     .shutdown { background: var(--red-bg); color: #f3a0a0; border: 1px solid var(--red);
                 border-radius: 6px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
@@ -84,7 +84,7 @@
       <a href="/logs">Logs</a>
     </nav>
     <span class="status" id="conn">connecting…</span>
-    <button class="demo-btn" id="demo">Run demo</button>
+    <button class="demo-btn hidden" id="demo">Run demo</button>
     <button class="shutdown" id="shutdownBtn" title="drone-check-Server beenden">Server beenden</button>
   </header>
 
@@ -232,6 +232,9 @@
           // fallback for the folder label, shown when enabled in config.
           if (evt.allow_manual_pilot) $("pilotBox").classList.remove("hidden");
           else $("pilotBox").classList.add("hidden");
+          // The "Run demo" button is only meaningful when serve was started with
+          // --demo (no USB watcher); otherwise hide it.
+          $("demo").classList.toggle("hidden", !evt.demo);
           break;
         case "log_batch": setLog(evt.entries); break;
         case "log": addLog(evt.entry); break;

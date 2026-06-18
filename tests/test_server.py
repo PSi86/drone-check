@@ -158,6 +158,7 @@ def test_demo_folder_named_from_fc_and_immutable(tmp_path):
     with TestClient(app) as client:
         cfg_evt, verdict = _first_verdict(client)
         assert cfg_evt["allow_manual_pilot"] is False
+        assert cfg_evt["demo"] is True  # started with demo=True → Run demo shown
 
         snap = verdict["snapshot"]
         assert snap["firmware"]["variant"] == "BTFL"
