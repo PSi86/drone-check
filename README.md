@@ -8,12 +8,15 @@ When a flight controller is plugged in over USB the tool:
 1. **Identifies** it over **MSP** (binary): FC variant, firmware version, build
    info (incl. short git hash) and the 96-bit MCU unique id used as the
    *flight-controller serial*.
-2. Drops into the text **CLI** and captures the full configuration
+2. Drops into the **CLI** and captures the full configuration
    (`version`, `dump all`, `status`), checking each response for completeness,
    then exits cleanly so the FC reboots. `dump all` is used because it lists
    every setting with its absolute value — rule evaluation never has to guess a
    firmware default. (`diff all` is optional; add it to `cli_commands` if you
-   also want the portable human-readable backup stored.)
+   also want the portable human-readable backup stored.) Both CLI variants are
+   handled automatically: the classic `#` text prompt (Betaflight ≤ 4.5.x, INAV)
+   **and** the framed MSP-CLI used by **Betaflight 4.5.4+ / 2025.x**, which the
+   `#` prompt no longer reaches.
 3. **Normalises** the data — in particular the VTX power configuration
    (armed / disarmed power and the radio switches that select it).
 4. **Verifies the firmware hash** against a local allowlist and/or the official
@@ -92,7 +95,7 @@ drone-check demo
 
 | Command | What it does |
 |---------|--------------|
-| `serve [--host H] [--port P] [--demo]` | Start the local web UI and the USB hot-plug watcher. `--demo` skips the watcher (use the "Run demo" button). |
+| `serve [--host H] [--port P] [--demo]` | Start the local web UI and the USB hot-plug watcher. `--demo` skips the watcher and shows a "Run demo" button instead (the button only appears in `--demo` mode). Stop with Ctrl+C / Enter / the "Server beenden" button — see [Stopping the server](#stopping-the-server). |
 | `ports` | List available serial ports with VID:PID — find your FC's `COMx`. |
 | `probe <port> [--raw]` | First-contact bring-up: MSP identify + raw CLI dump, **no** rule evaluation. |
 | `inspect <port>` | Full capture + hash check + rule evaluation; prints the report. Exit code `0` = PASS, `2` = FAIL. |
@@ -106,6 +109,17 @@ it is read automatically and a green/red verdict appears; the pilot and craft
 names come from the drone. Unplug and repeat.
 
 For the first run against real hardware, follow [HARDWARE_TEST.md](HARDWARE_TEST.md).
+
+### Stopping the server
+
+`serve` runs until you stop it. Any of these does a **clean** shutdown (it ends
+an active SITL session and stops the WSL distro it started):
+
+- **Ctrl+C** in the terminal — works in `cmd.exe` and PowerShell 7. ⚠️ **Windows
+  PowerShell 5.1** often does not forward Ctrl+C to a child program, so it may
+  appear to do nothing there; use one of the next two instead.
+- **Press Enter** in the `serve` window — reliable in every terminal.
+- The **"Server beenden"** button in the web UI header.
 
 ## Logs page & "view in Configurator"
 
@@ -157,7 +171,7 @@ All config lives in `config/`:
 
 | File | Purpose |
 |------|---------|
-| `settings.yaml` | log dir, folder template, manual-pilot toggle, baud rate, CLI commands, hash-check toggles |
+| `settings.yaml` | log dir, folder template, manual-pilot toggle, baud rate, CLI commands, hash-check toggles, capture-retry cap, SITL/Configurator options |
 | `rules.yaml` | CEL rules; a drone passes only if every `critical` rule passes |
 | `firmware_allowlist.yaml` | approved git hashes per variant + version |
 

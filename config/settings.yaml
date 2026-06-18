@@ -31,6 +31,11 @@ cli_max_wait: 45.0        # absolute cap per CLI command (dump all is large)
 connect_debounce: 3.0
 disconnect_debounce: 3.0
 
+# If a capture fails while the drone stays plugged in, retry this many extra
+# times before giving up (then the drone must be unplugged and replugged to try
+# again). Prevents an unreadable drone from retrying in a tight loop forever.
+capture_max_retries: 2
+
 # Set a directory to record raw serial traffic for every capture (debugging).
 # debug_dir: debug
 
@@ -60,9 +65,11 @@ firmware_hash:
 # "View in Configurator": load a stored capture into a version-matched Betaflight
 # SITL (run under WSL) so the real web Configurator can connect and show exactly
 # what the drone owner would see. SITL binaries are PRE-BUILT per firmware version
-# with scripts/build_sitl.sh (inside WSL); drone-check only selects them.
-# Note: stock SITL omits VTX — VTX settings are NOT shown here; drone-check's own
-# dump analysis stays authoritative for VTX power.
+# with scripts/build_sitl.sh (inside WSL); drone-check only selects them. WSL is
+# started on the first "View in Configurator" and stopped when drone-check exits
+# (only if drone-check started it). The build patches VTX support in, so the
+# vtxtable IS shown; only live VTX *device* control is inert (no real radio).
+# drone-check's own dump analysis stays authoritative for VTX power either way.
 sitl:
   enabled: true
   distro: Ubuntu              # WSL distro holding the SITL cache
