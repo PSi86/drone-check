@@ -33,6 +33,11 @@ operator set a *fallback* pilot name that is used only for the folder label when
 the FC reports none — it never alters the captured data files. The folder naming
 is configurable via `folder_template`.
 
+Beyond live capture, the web UI has a **logs page** (`/logs`) to browse past
+captures and **view any capture's configuration in the real Betaflight
+Configurator** via a version-matched SITL instance — see
+[Logs page & "view in Configurator"](#logs-page--view-in-configurator).
+
 ## Requirements
 
 - **Python 3.10+**
@@ -101,6 +106,31 @@ it is read automatically and a green/red verdict appears; the pilot and craft
 names come from the drone. Unplug and repeat.
 
 For the first run against real hardware, follow [HARDWARE_TEST.md](HARDWARE_TEST.md).
+
+## Logs page & "view in Configurator"
+
+The web UI has a second page at **`/logs`** (link in the header) that lists every
+capture in the log directory, newest first — searchable (pilot, craft, UID,
+firmware version, folder) and filterable by verdict and firmware variant. Each
+row can **open the capture folder** and **view the configuration in the real
+Betaflight Configurator**: drone-check loads the capture's `dump all` into a
+version-matched **Betaflight SITL** instance (run under WSL) so an inspector sees
+exactly what the drone owner would see, with all firmware-version-specific GUI
+behaviour handled by the real Configurator.
+
+One-time setup (build the SITL binaries for the versions you inspect, inside
+WSL):
+
+```bash
+sudo apt-get install -y build-essential ruby git
+bash scripts/build_sitl.sh 4.4.0 4.5.4
+```
+
+Then on `/logs`, click **View in Configurator** and connect the Betaflight web
+Configurator (manual connection) to `ws://127.0.0.1:6761`.
+
+See **[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)** for the full guide: setup,
+how it works, the VTX config patch, caching, configuration and troubleshooting.
 
 ## Output
 

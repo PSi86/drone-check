@@ -92,3 +92,120 @@ def test_operator_pilot_enabled_sets_fallback(tmp_path):
         resp = client.post("/api/operator-pilot", json={"name": "Bob"})
         data = resp.json()
         assert data["ok"] is True and data["operator_pilot"] == "Bob"
+
+
+def _seed_capture(base, name="2026-06-17T10-00-00Z_cap", passed=True):
+    folder = base / name
+    (folder / "raw").mkdir(parents=True)
+    (folder / "snapshot.json").write_text(json.dumps({
+        "captured_at": "2026-06-17T10-00-00Z", "uid": "abc",
+        "pilot_name": "Ada", "craft_name": "Quad",
+        "firmware": {"variant": "BTFL", "version": "4.4.0", "git_hash": "deadbeef"},
+        "firmware_hash_approved": True, "firmware_hash_source": "github",
+    }), encoding="utf-8")
+    (folder / "evaluation.json").write_text(json.dumps({"passed": passed}), encoding="utf-8")
+    (folder / "raw" / "dump_all.txt").write_text("batch start\nsave\n", encoding="utf-8")
+    return folder
+
+
+def test_logs_page_served(tmp_path):
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.get("/logs")
+        assert resp.status_code == 200
+        assert "drone-check" in resp.text
+
+
+def test_api_captures_lists_stored_captures(tmp_path):
+    _seed_capture(tmp_path)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        data = client.get("/api/captures").json()
+        assert len(data["captures"]) == 1
+        cap = data["captures"][0]
+        assert cap["pilot_name"] == "Ada"
+        assert cap["verdict"] is True
+        assert cap["has_dump"] is True
+
+
+def test_open_folder_invokes_file_manager(tmp_path, monkeypatch):
+    folder = _seed_capture(tmp_path)
+    opened = {}
+    monkeypatch.setattr("drone_check.captures.open_in_file_manager",
+                        lambda p: opened.setdefault("path", str(p)))
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post(f"/api/captures/{folder.name}/open-folder")
+        assert resp.json() == {"ok": True}
+        assert opened["path"] == str(folder.resolve())
+
+
+def test_open_folder_unknown_capture_returns_404(tmp_path):
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post("/api/captures/..%2Fsecret/open-folder")
+        assert resp.status_code == 404
+
+
+class _FakeSitl:
+    """Stand-in for SitlRunner so route tests never touch WSL/SITL."""
+
+    def __init__(self, *_a, **_k):
+        self.started = None
+        self.stopped = False
+
+    def start(self, capture_id, version, dump_text):
+        from drone_check.sitl import SitlStatus
+        self.started = (capture_id, version)
+        return SitlStatus(running=True, version=version, capture_id=capture_id,
+                          connect_url="ws://127.0.0.1:6761")
+
+    def status(self):
+        from drone_check.sitl import SitlStatus
+        return SitlStatus(running=False)
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_configurator_starts_sitl_for_capture(tmp_path, monkeypatch):
+    folder = _seed_capture(tmp_path)
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post(f"/api/captures/{folder.name}/configurator")
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["connect_url"] == "ws://127.0.0.1:6761"
+        assert data["version"] == "4.4.0"
+
+
+def test_configurator_disabled_in_config(tmp_path, monkeypatch):
+    _seed_capture(tmp_path)
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    cfg = _config(tmp_path)
+    cfg.settings.sitl_enabled = False
+    app = create_app(cfg, demo=True)
+    with TestClient(app) as client:
+        resp = client.post("/api/captures/2026-06-17T10-00-00Z_cap/configurator")
+        assert resp.json()["ok"] is False
+
+
+def test_configurator_no_dump_fails(tmp_path, monkeypatch):
+    folder = tmp_path / "nodump"
+    (folder / "raw").mkdir(parents=True)
+    (folder / "snapshot.json").write_text(json.dumps(
+        {"firmware": {"version": "4.4.0"}}), encoding="utf-8")
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        resp = client.post(f"/api/captures/{folder.name}/configurator")
+        assert resp.json()["ok"] is False
+        assert "dump" in resp.json()["reason"]
+
+
+def test_sitl_stop_route(tmp_path, monkeypatch):
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        assert client.post("/api/sitl/stop").json()["ok"] is True

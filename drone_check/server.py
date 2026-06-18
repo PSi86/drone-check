@@ -23,7 +23,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .applog import AppLog
+from . import captures
 from .config import AppConfig
+from .sitl import SitlError, SitlRunner
 from .flightcontroller import FakeFlightController, RealFlightController
 from .orchestrator import Orchestrator
 from . import serialwatch
@@ -96,6 +98,7 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     hub: Hub | None = None
     applog: AppLog | None = None
     stop_flag = threading.Event()
+    sitl = SitlRunner(config.settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -120,6 +123,7 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
             applog.info("demo mode: serial watcher disabled (use Run demo)")
         yield
         stop_flag.set()
+        sitl.stop()
         applog.info("session stopping")
         applog.close()
 
@@ -128,6 +132,80 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     @app.get("/")
     async def index() -> HTMLResponse:
         return HTMLResponse((_WEB_DIR / "index.html").read_text(encoding="utf-8"))
+
+    @app.get("/logs")
+    async def logs_page() -> HTMLResponse:
+        return HTMLResponse((_WEB_DIR / "logs.html").read_text(encoding="utf-8"))
+
+    @app.get("/api/captures")
+    async def list_captures() -> JSONResponse:
+        """List every stored capture in the log directory (newest first)."""
+        items = captures.list_captures(config.settings.log_dir)
+        return JSONResponse({"captures": [c.to_dict() for c in items]})
+
+    @app.post("/api/captures/{capture_id}/open-folder")
+    async def open_capture_folder(capture_id: str) -> JSONResponse:
+        """Open a capture folder in the local OS file manager."""
+        try:
+            folder = captures.resolve_capture_dir(config.settings.log_dir, capture_id)
+        except ValueError:
+            return JSONResponse({"ok": False, "reason": "unknown capture"}, status_code=404)
+        try:
+            captures.open_in_file_manager(folder)
+        except Exception as exc:  # pragma: no cover - OS-dependent failure
+            return JSONResponse({"ok": False, "reason": str(exc)}, status_code=500)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/captures/{capture_id}/configurator")
+    async def open_in_configurator(capture_id: str) -> JSONResponse:
+        """Load a capture into SITL and expose it for the web Configurator."""
+        if not config.settings.sitl_enabled:
+            return JSONResponse({"ok": False, "reason": "SITL view disabled in config"})
+        try:
+            folder = captures.resolve_capture_dir(config.settings.log_dir, capture_id)
+        except ValueError:
+            return JSONResponse({"ok": False, "reason": "unknown capture"}, status_code=404)
+
+        snapshot = captures._read_json(folder / "snapshot.json") or {}
+        version = (snapshot.get("firmware") or {}).get("version", "")
+        dump_file = folder / "raw" / captures.DUMP_FILENAME
+        if not dump_file.is_file():
+            return JSONResponse({"ok": False, "reason": "capture has no dump_all.txt"})
+        dump_text = dump_file.read_text(encoding="utf-8", errors="replace")
+
+        # Starting SITL blocks (build/boot); run it off the event loop.
+        def _run():
+            return sitl.start(capture_id, version, dump_text)
+
+        try:
+            status = await asyncio.to_thread(_run)
+        except SitlError as exc:
+            return JSONResponse({"ok": False, "reason": str(exc)})
+        if applog is not None:
+            applog.info(f"SITL session for {capture_id} ({version}) → {status.connect_url}")
+        return JSONResponse({
+            "ok": True,
+            "connect_url": status.connect_url,
+            "version": status.version,
+            "note": "SITL has no real motor outputs, so the motor/mixer tabs show "
+                    "warnings — that is expected and does not affect the inspection.",
+        })
+
+    @app.get("/api/sitl/status")
+    async def sitl_status() -> JSONResponse:
+        st = sitl.status()
+        return JSONResponse({
+            "running": st.running, "starting": st.starting,
+            "phase": st.phase, "detail": st.detail,
+            "sent": st.sent, "total": st.total,
+            "version": st.version, "capture_id": st.capture_id,
+            "connect_url": st.connect_url,
+        })
+
+    @app.post("/api/sitl/stop")
+    async def sitl_stop() -> JSONResponse:
+        await asyncio.to_thread(sitl.stop)
+        return JSONResponse({"ok": True})
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
