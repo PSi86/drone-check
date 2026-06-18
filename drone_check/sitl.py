@@ -95,17 +95,21 @@ def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -
         time.sleep(0.4)
         _drain(sock, 1.5)
 
+        # Send a chunk, then wait for its echo before sending the next: the echo
+        # proves SITL's CLI task drained the RX buffer, so the outstanding bytes
+        # never exceed one chunk (kept well under the 1400-byte RX buffer — sending
+        # the whole dump at once would overflow that ring buffer and corrupt the
+        # config silently). With SITL's poll timeout lowered to 10 ms the echo is
+        # prompt, so this is close to the firmware's true processing rate.
         i = 0
-        chunk_limit = 512  # << 1400-byte RX buffer, leaving ample margin
+        chunk_limit = 1024  # < 1400-byte RX buffer
         while i < total:
             chunk = bytearray()
             while i < total and len(chunk) < chunk_limit:
                 chunk += cmds[i].encode("utf-8", "replace") + b"\r\n"
                 i += 1
             sock.sendall(chunk)
-            # Drain the echo: returns as soon as SITL has consumed this chunk,
-            # which paces us to the firmware and prevents an RX overflow.
-            _drain(sock, 0.8, idle=0.05)
+            _drain(sock, 0.5, idle=0.02)
             if progress_cb is not None:
                 progress_cb(i, total)
 
