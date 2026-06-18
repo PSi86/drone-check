@@ -75,6 +75,30 @@ def cmd_ports(args: argparse.Namespace) -> int:
     return 0
 
 
+def _make_stop_requester(server):
+    """A graceful-shutdown requester that fires once, no matter how many stop
+    triggers call it.
+
+    Ctrl+C wakes *both* the console control handler and the Enter reader (its
+    blocking ``readline`` returns on the Ctrl+C-induced EOF), so without a guard
+    the stop message prints twice. This sets uvicorn's ``should_exit`` and prints
+    the message only on the first call; later calls are no-ops.
+    """
+    import threading
+
+    done = threading.Event()
+
+    def request() -> bool:
+        if done.is_set():
+            return False
+        done.set()
+        print("\nStopping drone-check...", file=sys.stderr, flush=True)
+        server.should_exit = True  # graceful: uvicorn runs the lifespan shutdown
+        return True
+
+    return request
+
+
 def _install_stop_on_enter(server, on_stop=None):
     """Stop the server cleanly when the operator presses Enter.
 
@@ -93,11 +117,7 @@ def _install_stop_on_enter(server, on_stop=None):
     if stream is None or (not forced and not stream.isatty()):
         return None
 
-    def _stop() -> None:
-        print("\nStopping drone-check...", file=sys.stderr, flush=True)
-        server.should_exit = True  # graceful: uvicorn runs the lifespan shutdown
-
-    action = on_stop or _stop
+    action = on_stop or _make_stop_requester(server)
 
     def _reader() -> None:
         try:
@@ -111,7 +131,7 @@ def _install_stop_on_enter(server, on_stop=None):
     return thread
 
 
-def _install_windows_ctrl_handler(server):
+def _install_windows_ctrl_handler(server, on_stop=None):
     """Make Ctrl+C (and window close) trigger a graceful shutdown on Windows.
 
     Python's SIGINT delivery is unreliable under the asyncio Proactor loop on
@@ -119,8 +139,9 @@ def _install_windows_ctrl_handler(server):
     Ctrl+C appears to do nothing until other console I/O (e.g. pressing Enter)
     wakes the loop — which is exactly the "press Enter, then Ctrl+C" symptom. A
     native console control handler runs in its own OS thread the moment Ctrl+C is
-    pressed, independent of the loop, and just flips ``should_exit``; uvicorn's
-    main loop polls that every 100 ms and runs the lifespan shutdown.
+    pressed, independent of the loop, and just requests the graceful stop;
+    uvicorn's main loop polls ``should_exit`` every 100 ms and runs the lifespan
+    shutdown.
 
     Returns the handler (keep a reference so ctypes does not garbage-collect it),
     or None off Windows.
@@ -130,6 +151,7 @@ def _install_windows_ctrl_handler(server):
     import ctypes
     from ctypes import wintypes
 
+    request = on_stop or _make_stop_requester(server)
     handled = {0, 1, 2, 5, 6}  # CTRL_C, CTRL_BREAK, CTRL_CLOSE, LOGOFF, SHUTDOWN
     state = {"asked": False}
 
@@ -142,8 +164,7 @@ def _install_windows_ctrl_handler(server):
             # case a graceful shutdown is wedged.
             return False
         state["asked"] = True
-        server.should_exit = True
-        print("\nStopping drone-check...", file=sys.stderr, flush=True)
+        request()
         return True  # handled — suppress the default (which would hard-kill)
 
     if not ctypes.windll.kernel32.SetConsoleCtrlHandler(_handler, True):
@@ -180,8 +201,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
         timeout_graceful_shutdown=10,
     ))
     app.state.uvicorn_server = server  # lets POST /api/shutdown stop it cleanly
-    _install_stop_on_enter(server)
-    _ctrl_handler = _install_windows_ctrl_handler(server)  # noqa: F841 (kept alive)
+    # One shared requester so Ctrl+C — which wakes both the console handler and
+    # the Enter reader — prints the stop message and stops only once.
+    request_stop = _make_stop_requester(server)
+    _install_stop_on_enter(server, on_stop=request_stop)
+    _ctrl_handler = _install_windows_ctrl_handler(  # noqa: F841 (kept alive)
+        server, on_stop=request_stop)
     server.run()
     return 0
 
