@@ -94,7 +94,7 @@ def _install_stop_on_enter(server, on_stop=None):
         return None
 
     def _stop() -> None:
-        print("\nStopping drone-check…", file=sys.stderr, flush=True)
+        print("\nStopping drone-check...", file=sys.stderr, flush=True)
         server.should_exit = True  # graceful: uvicorn runs the lifespan shutdown
 
     action = on_stop or _stop
@@ -111,6 +111,46 @@ def _install_stop_on_enter(server, on_stop=None):
     return thread
 
 
+def _install_windows_ctrl_handler(server):
+    """Make Ctrl+C (and window close) trigger a graceful shutdown on Windows.
+
+    Python's SIGINT delivery is unreliable under the asyncio Proactor loop on
+    Windows: a pending Ctrl+C is not processed while the loop is blocked, so
+    Ctrl+C appears to do nothing until other console I/O (e.g. pressing Enter)
+    wakes the loop — which is exactly the "press Enter, then Ctrl+C" symptom. A
+    native console control handler runs in its own OS thread the moment Ctrl+C is
+    pressed, independent of the loop, and just flips ``should_exit``; uvicorn's
+    main loop polls that every 100 ms and runs the lifespan shutdown.
+
+    Returns the handler (keep a reference so ctypes does not garbage-collect it),
+    or None off Windows.
+    """
+    if sys.platform != "win32":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    handled = {0, 1, 2, 5, 6}  # CTRL_C, CTRL_BREAK, CTRL_CLOSE, LOGOFF, SHUTDOWN
+    state = {"asked": False}
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+    def _handler(ctrl_type):
+        if ctrl_type not in handled:
+            return False
+        if state["asked"]:
+            # A second Ctrl+C: stop handling so the OS default force-kills, in
+            # case a graceful shutdown is wedged.
+            return False
+        state["asked"] = True
+        server.should_exit = True
+        print("\nStopping drone-check...", file=sys.stderr, flush=True)
+        return True  # handled — suppress the default (which would hard-kill)
+
+    if not ctypes.windll.kernel32.SetConsoleCtrlHandler(_handler, True):
+        return None
+    return _handler
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
@@ -118,18 +158,30 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     config = load_config(args.config)
     app = create_app(config, demo=args.demo)
-    # Three clean ways to stop, all triggering uvicorn's graceful shutdown (which
+    # Several clean ways to stop, all triggering uvicorn's graceful shutdown (which
     # runs the app lifespan shutdown — ending any SITL session and terminating the
-    # WSL distro we started): Ctrl+C (where the terminal delivers it; reliable in
-    # cmd.exe, flaky in Windows PowerShell 5.1), pressing Enter here, or the
-    # "Server beenden" button in the web UI. timeout_graceful_shutdown caps the
-    # wait on open connections so the clean stop can't hang.
-    server = uvicorn.Server(uvicorn.Config(
+    # WSL distro we started): Ctrl+C, pressing Enter here, or the "Server beenden"
+    # button in the web UI. timeout_graceful_shutdown caps the wait on open
+    # connections so the clean stop can't hang.
+    #
+    # On Windows we own Ctrl+C via a native console control handler (see
+    # _install_windows_ctrl_handler) and disable uvicorn's own signal handlers,
+    # because Python-level SIGINT is unreliable under the Proactor loop there
+    # (Ctrl+C only registered after pressing Enter). Other platforms keep
+    # uvicorn's default signal handling.
+    class _Server(uvicorn.Server):
+        def install_signal_handlers(self) -> None:
+            if sys.platform == "win32":
+                return
+            super().install_signal_handlers()
+
+    server = _Server(uvicorn.Config(
         app, host=args.host, port=args.port, log_level="info",
         timeout_graceful_shutdown=10,
     ))
     app.state.uvicorn_server = server  # lets POST /api/shutdown stop it cleanly
     _install_stop_on_enter(server)
+    _ctrl_handler = _install_windows_ctrl_handler(server)  # noqa: F841 (kept alive)
     server.run()
     return 0
 
