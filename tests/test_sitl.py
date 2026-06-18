@@ -79,8 +79,9 @@ class FramedFakeSock:
 
     def sendall(self, data):
         self.sent += data
-        if data.endswith(b"\x03"):  # a complete frame → reply with an ETX frame
-            self._inbox += b"\x02ack\x03"
+        # Ack every framed command in the write (one STX..ETX reply per ETX), so
+        # the loader's per-command ack counting sees all of a chunk's commands.
+        self._inbox += b"\x02ack\x03" * data.count(b"\x03")
 
     def settimeout(self, _t):
         pass
@@ -149,6 +150,27 @@ def test_supports_framed_cli_picks_per_firmware_generation():
     # Unparseable / missing → fail safe to legacy.
     assert supports_framed_cli("") is False
     assert supports_framed_cli(None) is False
+
+
+def test_find_msp_port_picks_msp_speaking_uart(monkeypatch):
+    # A capture can put MSP on a UART other than UART1 (e.g. `serial UART6 ...`),
+    # which SITL maps to tcp+5. The proxy must target whatever actually speaks MSP.
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(sitl, "_speaks_msp", lambda host, port: port == 5766)
+    assert sitl._find_msp_port("127.0.0.1", 5761, count=8, timeout=5) == 5766
+
+
+def test_find_msp_port_prefers_uart1_when_it_speaks_msp(monkeypatch):
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    # UART1 (the common case) and UART6 both answer; UART1 is scanned first.
+    monkeypatch.setattr(sitl, "_speaks_msp", lambda host, port: port in (5761, 5766))
+    assert sitl._find_msp_port("127.0.0.1", 5761, count=8, timeout=5) == 5761
+
+
+def test_find_msp_port_none_when_no_port_answers(monkeypatch):
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(sitl, "_speaks_msp", lambda host, port: False)
+    assert sitl._find_msp_port("127.0.0.1", 5761, count=8, timeout=0.01) is None
 
 
 def test_connect_cli_retries_after_reset(monkeypatch):

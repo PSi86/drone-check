@@ -227,16 +227,45 @@ def _connect_framed(host: str, port: int, attempts: int = 4) -> socket.socket:
     raise SitlError(f"could not open SITL framed CLI on {host}:{port}: {last_exc}")
 
 
+def _read_etx_acks(sock: socket.socket, n: int,
+                   total: float = 15.0, idle: float = 3.0) -> int:
+    """Read framed replies until ``n`` ETX terminators have been seen.
+
+    Each framed CLI command — even one SITL rejects — answers with exactly one
+    ``STX..ETX`` frame, so counting ETX bytes counts *processed* commands. Returns
+    the number actually seen (``< n`` only if it timed out)."""
+    sock.setblocking(False)
+    seen = 0
+    start = last = time.monotonic()
+    while seen < n:
+        now = time.monotonic()
+        if now - start > total or now - last > idle:
+            break
+        try:
+            chunk = sock.recv(8192)
+            if chunk:
+                seen += chunk.count(ETX)
+                last = now
+            else:
+                time.sleep(0.005)
+        except BlockingIOError:
+            time.sleep(0.005)
+    return seen
+
+
 def _load_dump_framed(host: str, port: int, cmds: list[str], progress_cb=None) -> None:
     """Load a dump via the framed MSP-CLI (Betaflight >= 4.5.4 / 2025.x).
 
     Each command is wrapped in one ``STX..ETX`` frame. Frames are sent in chunks
-    kept under SITL's 1400-byte RX ring (which has no backpressure), draining the
-    framed replies between chunks for flow control — exactly like the legacy
-    path, just framed. Doing one round-trip *per line* would make a ~1400-line
-    dump take minutes; chunking keeps it to ~15 s. ``save`` writes the eeprom and
-    reboots before it can send its closing ETX, so it is sent without waiting —
-    the caller waits for the process to exit.
+    kept under SITL's 1400-byte RX ring (which has no backpressure and silently
+    overwrites unread bytes), and **after every chunk we wait until SITL has
+    acked all of that chunk's commands** (one returned ETX per command) before
+    sending the next. That is true flow control: a fixed time-based drain can
+    return while SITL is still mid-processing, so the next chunk overruns the
+    ring and config lines (e.g. ``serial``) are silently lost — unacceptable for
+    an inspection tool. Counting acks is both correct and fast (it follows
+    SITL's real processing rate). ``save`` reboots before it can send its closing
+    ETX, so it is sent without waiting — the caller waits for the process to exit.
     """
     total = len(cmds)
     sock = _connect_framed(host, port)
@@ -244,18 +273,19 @@ def _load_dump_framed(host: str, port: int, cmds: list[str], progress_cb=None) -
         i = 0
         chunk_limit = 1024  # < 1400-byte RX buffer, incl. STX/LF/ETX framing
         while i < total:
+            n = 0
             chunk = bytearray()
             while i < total and len(chunk) < chunk_limit:
                 chunk += STX + cmds[i].encode("utf-8", "replace") + LF + ETX
                 i += 1
+                n += 1
             sock.sendall(chunk)
-            # Drain the framed replies: receiving them proves SITL's CLI task
-            # consumed the chunk, so the outstanding bytes never exceed one chunk.
-            _drain(sock, 0.5, idle=0.02)
+            # Block until all n commands in this chunk are acked, so the RX ring
+            # is drained before the next chunk is sent (no silent overflow).
+            _read_etx_acks(sock, n)
             if progress_cb is not None:
                 progress_cb(i, total)
 
-        _drain(sock, 1.0)
         sock.sendall(STX + b"save" + LF + ETX)
         _drain(sock, 3.0)
     finally:
@@ -279,6 +309,43 @@ def _port_free(host: str, port: int) -> bool:
             return False
     except OSError:
         return True
+
+
+def _speaks_msp(host: str, port: int) -> bool:
+    """True if ``port`` answers an MSP request (an MSP-capable serial port).
+
+    SITL maps each UART to TCP ``5760 + n``; the CLI/MSP can live on whichever
+    UART the loaded config assigns ``MSP`` to (not necessarily UART1). We probe
+    with ``MSP_API_VERSION`` and check for an MSP reply header (``$M>`` for v1,
+    ``$X>`` for v2)."""
+    try:
+        with socket.create_connection((host, port), timeout=1) as s:
+            s.sendall(b"$M<\x00\x01\x01")  # MSP_API_VERSION, no payload
+            s.settimeout(0.6)
+            try:
+                reply = s.recv(64)
+            except OSError:
+                return False
+            return reply.startswith(b"$M>") or reply.startswith(b"$X>")
+    except OSError:
+        return False
+
+
+def _find_msp_port(host: str, base_port: int, count: int, timeout: float) -> int | None:
+    """Wait for the serve-phase SITL to come up and return the UART TCP port that
+    speaks MSP, so the proxy targets it wherever the loaded config put MSP.
+
+    ``base_port`` is UART1's TCP port; ``count`` UARTs are scanned (UART1..UARTn).
+    UART1 is tried first so the common case (MSP on UART1) is picked immediately.
+    """
+    end = time.monotonic() + timeout
+    ports = [base_port + i for i in range(count)]
+    while time.monotonic() < end:
+        for p in ports:
+            if _speaks_msp(host, p):
+                return p
+        time.sleep(0.3)
+    return None
 
 
 # ---- session ----------------------------------------------------------------
@@ -630,7 +697,14 @@ class SitlRunner:
         self._ensure_current(gen)
         self._progress("starting2", "Starting SITL from saved configuration…", gen=gen)
         self._sitl = self._wsl(f"cd {run_dir} && exec {elf} >/dev/null 2>&1")
-        if not _wait_port(host, tcp, timeout=self.s.sitl_boot_timeout):
+        # The loaded config decides which UART carries MSP, and SITL maps each
+        # UART to its own TCP port (UART1=tcp, UART2=tcp+1, …). A capture can put
+        # MSP on a UART other than UART1 (e.g. `serial UART6 ...` with the MSP
+        # bit), so don't assume UART1 — find the port that actually answers MSP
+        # and point the Configurator proxy at it. Otherwise the Configurator
+        # connects to a non-MSP port and times out ("no configuration received").
+        msp_port = _find_msp_port(host, tcp, count=8, timeout=self.s.sitl_boot_timeout)
+        if msp_port is None:
             self._ensure_current(gen)
             self._teardown()
             self._progress("idle", "", starting=False, gen=gen)
@@ -641,7 +715,7 @@ class SitlRunner:
         self._progress("proxy", "Starting Configurator proxy…", gen=gen)
         self._proxy = subprocess.Popen(
             [sys.executable, "-m", "websockify",
-             f"127.0.0.1:{self.s.sitl_ws_port}", f"127.0.0.1:{tcp}"],
+             f"127.0.0.1:{self.s.sitl_ws_port}", f"127.0.0.1:{msp_port}"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=_NEW_PROCESS_GROUP,
