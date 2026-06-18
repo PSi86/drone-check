@@ -44,7 +44,7 @@ class Orchestrator:
 
         self._verifier = FirmwareVerifier(
             allowlist=config.allowlist,
-            use_allowlist=config.settings.hash_use_allowlist,
+            acceptance_level=config.settings.hash_acceptance_level,
             use_github=config.settings.hash_use_github,
         )
         # Build the rule engine eagerly so a bad rules.yaml fails fast.

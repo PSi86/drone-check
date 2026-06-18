@@ -23,7 +23,7 @@ def _verifier(cfg, seed: bool):
     if seed:
         seed_allowlist(allow)
     # offline-only check for deterministic tests
-    return FirmwareVerifier(allow, use_allowlist=True, use_github=False)
+    return FirmwareVerifier(allow, acceptance_level="whitelist", use_github=False)
 
 
 def test_betaflight_fails_armed_power_rule():

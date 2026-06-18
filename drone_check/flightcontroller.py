@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Protocol
 
-from .cli_session import CliSession
+from .cli_session import CliSession, supports_framed_cli
 from .msp import MspClient, MspIdentity
 from .transport import LoggingTransport, SerialTransport, Transport
 
@@ -60,15 +60,10 @@ class RealFlightController:
         return ident
 
     def _supports_framed_cli(self) -> bool:
-        """Betaflight >= 4.5.4 (including the 2025.x year-based scheme) drives the
-        CLI through the framed MSP-CLI protocol; the modern Configurator uses it
-        and the raw ``#`` prompt is unreliable on these builds. Older firmware
-        (e.g. 4.4.0) still uses ``#``."""
-        try:
-            parts = tuple(int(x) for x in self._version.split(".")[:3])
-        except (ValueError, AttributeError):
-            return False
-        return len(parts) == 3 and parts >= (4, 5, 4)
+        """Whether this FC uses the framed MSP-CLI (Betaflight >= 4.5.4 and the
+        2025.x scheme) rather than the raw ``#`` prompt. See
+        :func:`drone_check.cli_session.supports_framed_cli`."""
+        return supports_framed_cli(self._version)
 
     def run_cli(self, commands: list[str]) -> dict[str, str]:
         if self._supports_framed_cli():

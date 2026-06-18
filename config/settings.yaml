@@ -57,9 +57,19 @@ cli_commands:
 # `diff all`/`diff` captures (with no dump present) to the parser.
 parse_diff_fallback: false
 
-# Firmware-hash verification: approve if either enabled source approves.
+# Firmware-hash verification.
+#
+# The reported source ("allowlist" / "github" / "none") documents the hash and is
+# the same regardless of these settings. The acceptance_level decides how that
+# fact maps to the approved / not-approved verdict:
+#   whitelist – approve only an exact allowlist (official-release) hash
+#   official  – approve an allowlist hash OR any commit that exists in the
+#               official repo ("all official builds"); the default
+#   open      – never reject an unknown hash (approve regardless)
+# use_github toggles the online existence check (set false for fully offline use;
+# the allowlist still works).
 firmware_hash:
-  use_allowlist: true
+  acceptance_level: official
   use_github: true
 
 # "View in Configurator": load a stored capture into a version-matched Betaflight

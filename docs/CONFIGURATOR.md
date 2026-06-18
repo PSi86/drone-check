@@ -59,8 +59,13 @@ cache. This is the agreed approach; see
    WSL, from the repo):
 
    ```bash
-   bash scripts/build_sitl.sh 4.4.0 4.5.4
+   bash scripts/build_sitl.sh 4.4.0 4.5.4 2025.12.2
    ```
+
+   `<version>` is a Betaflight git tag. Both the old semver tags (e.g. `4.4.0`)
+   and the newer date-based tags (e.g. `2025.12.2`) are supported — the script
+   adapts to the source-tree layout each firmware generation uses (see the
+   patches table below).
 
    Each version is cloned, patched and built into
    `~/.cache/drone-check/sitl/<version>/betaflight_SITL.elf`. The first build of a
@@ -73,24 +78,37 @@ WebSocket-only web Configurator to SITL's TCP port.
 ### What `build_sitl.sh` patches
 
 The stock SITL target is meant for the gazebo simulator and is missing things an
-inspector needs. The script applies three source patches before building:
+inspector needs. The script applies these source patches before building:
 
 | Patch | Why |
 |-------|-----|
 | `-Werror` → `-Wno-error` | Modern host GCC is far newer than the (often years-old) sources and would otherwise fail the build on new warnings. |
 | Enable `USE_VTX_COMMON` / `USE_VTX_CONTROL` / `USE_VTX_TABLE` | Stock SITL compiles VTX out, so the `vtxtable` (the anti-cheat-relevant power values/labels) would be invisible. The table is pure config — no VTX device is needed to show it. |
-| `dyad_setUpdateTimeout(0.5f)` → `0.01f` | SITL's TCP poll timeout otherwise flushes the CLI echo only ~twice a second, throttling the dump load to ~45 s. 0.01 s matches the 100 Hz serial task. |
+| `dyad_setUpdateTimeout(0.5f)` → `0.01f` | SITL's TCP poll timeout otherwise flushes the CLI echo only ~twice a second, throttling the dump load to ~45 s. 0.01 s matches the 100 Hz serial task. (Newer firmware already ships `0.01f`, so this is a no-op there.) |
 
-It also runs `make arm_sdk_install` for older firmware whose Makefile validates
-the ARM toolchain even for the host SITL target.
+The SITL source tree was reorganised between firmware generations, so the script
+locates each patch target adaptively: 4.4.x keeps SITL under
+`src/main/target/SITL/`, while 2024.x+ (incl. the date-based `2025.x` releases)
+moved it to `src/platform/SIMULATOR/`.
+
+It also performs two build prerequisites automatically:
+
+- **`make configs`** — newer firmware (2024.x+) keeps board configs in a separate
+  repo pulled in as the `src/config` git submodule, and the build refuses to
+  start until it is hydrated. SITL needs no board config, but the Makefile
+  structurally requires the directory to exist.
+- **`make arm_sdk_install`** — the build validates the ARM toolchain even for the
+  host SITL target. The SDK is fetched into the repo's `tools/` dir (no `sudo`,
+  no `PATH` change). The rule moved from the top `Makefile` (4.4.x) to
+  `mk/tools.mk` (2024.x+), so the script searches both.
 
 ## Using it
 
 1. `drone-check serve`, open **http://127.0.0.1:8000/logs**.
 2. On a capture, click **View in Configurator**. A bar at the bottom shows live
    progress (checking → starting → loading X/Y → saving → starting → ready).
-   - First time for a capture: **~10–15 s** (the whole `dump all` is fed through
-     SITL's CLI).
+   - First time for a capture: **a few seconds** (mostly the two SITL boots and
+     the save/reboot; feeding the whole `dump all` through the CLI is ~1 s).
    - Same capture again: **near-instant** (the populated eeprom is cached).
 3. When ready, the bar shows the connect address. Open the Betaflight web
    Configurator (`app.betaflight.com`), enable **manual connection** and connect
@@ -124,8 +142,16 @@ WSL — only exiting `serve` does.
    - start SITL with a fresh `eeprom.bin`, push the dump over the CLI (TCP 5761)
      in flow-controlled chunks, then `save` — SITL writes the eeprom and exits;
    - the populated eeprom is marked loaded and reused next time.
+
+   The CLI dialect matches the firmware, exactly as on real hardware: the legacy
+   raw `#` prompt for Betaflight < 4.5.4 / INAV, and the framed MSP-CLI
+   (`STX <cmd> LF ETX`) for Betaflight ≥ 4.5.4 and the 2025.x releases, which
+   ignore the raw `#` byte.
 3. **Serve.** Relaunch SITL in the same directory — it boots from the populated
-   eeprom — and start a `websockify` proxy `ws://127.0.0.1:6761 → tcp:5761`.
+   eeprom — and start a `websockify` proxy `ws://127.0.0.1:6761 → tcp:<MSP port>`.
+   The loaded config decides which UART carries MSP, and SITL maps each UART to
+   its own TCP port (UART1 = 5761 … UART6 = 5766), so the proxy is pointed at
+   whichever port actually answers MSP — not assumed to be UART1.
 
 Progress is exposed via `GET /api/sitl/status` (phase + line counter); the logs
 page polls it for the progress bar. `POST /api/sitl/stop` ends the session.
@@ -136,9 +162,16 @@ SITL's TCP receive buffer is a 1400-byte ring with **no overflow protection** an
 no backpressure on firmware consumption. Pasting the whole ~33 KB dump at once
 would overwrite unprocessed bytes and **silently corrupt the loaded config** —
 unacceptable for an inspection tool. So the loader sends the dump in chunks under
-1400 bytes and waits for the CLI echo (which proves SITL drained the buffer)
-before sending the next. Lines SITL always rejects (`resource` / `timer` / `dma`
-pin maps) are skipped. Correctness was verified by sampling settings spread
+1400 bytes and waits for the firmware to finish each chunk before sending the
+next: on the legacy CLI it waits for the command echo; on the framed CLI it
+packs many `LF`-separated commands into one `STX..ETX` frame and waits for that
+frame's single closing `ETX` (SITL runs the whole frame, then replies once). A
+fixed time-based pause is **not** enough — it can elapse while SITL is still
+processing, so the next chunk overruns the ring and config lines (e.g. `serial`)
+are silently dropped. Batching the framed CLI also keeps it fast: one command
+per frame would be gated by SITL's MSP-poll cadence (~20 ms/command, ~25 s for a
+full dump), whereas batched frames load it in ~1 s. Lines SITL always rejects
+(`resource` / `timer` / `dma` pin maps) are skipped. Correctness was verified by sampling settings spread
 across a real dump against the loaded SITL config.
 
 ### Caching

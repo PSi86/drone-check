@@ -115,9 +115,10 @@ For the first run against real hardware, follow [HARDWARE_TEST.md](HARDWARE_TEST
 `serve` runs until you stop it. Any of these does a **clean** shutdown (it ends
 an active SITL session and stops the WSL distro it started):
 
-- **Ctrl+C** in the terminal — works in `cmd.exe` and PowerShell 7. ⚠️ **Windows
-  PowerShell 5.1** often does not forward Ctrl+C to a child program, so it may
-  appear to do nothing there; use one of the next two instead.
+- **Ctrl+C** in the terminal — on Windows a native console handler triggers the
+  graceful shutdown directly (works in `cmd.exe` and PowerShell). ⚠️ **Windows
+  PowerShell 5.1** can still swallow Ctrl+C before it reaches the program; if it
+  appears to do nothing there, use one of the next two instead.
 - **Press Enter** in the `serve` window — reliable in every terminal.
 - The **"Server beenden"** button in the web UI header.
 
@@ -137,8 +138,12 @@ WSL):
 
 ```bash
 sudo apt-get install -y build-essential ruby git
-bash scripts/build_sitl.sh 4.4.0 4.5.4
+bash scripts/build_sitl.sh 4.4.0 4.5.4 2025.12.2
 ```
+
+Both old semver tags (e.g. `4.4.0`) and the newer date-based tags (e.g.
+`2025.12.2`) work — the build script adapts to the different source-tree layout
+each firmware generation uses.
 
 Then on `/logs`, click **View in Configurator** and connect the Betaflight web
 Configurator (manual connection) to `ws://127.0.0.1:6761`.

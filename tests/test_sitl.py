@@ -68,6 +68,115 @@ def test_load_dump_filters_framing_and_drives_save(fake_socket):
     assert fake_socket.closed
 
 
+class FramedFakeSock:
+    """A SITL socket speaking the framed MSP-CLI: every STX..ETX frame written
+    is acked with an ETX-terminated reply, so command_framed completes."""
+
+    def __init__(self):
+        self.sent = bytearray()
+        self.closed = False
+        self._inbox = bytearray()
+
+    def sendall(self, data):
+        self.sent += data
+        # Ack every framed command in the write (one STX..ETX reply per ETX), so
+        # the loader's per-command ack counting sees all of a chunk's commands.
+        self._inbox += b"\x02ack\x03" * data.count(b"\x03")
+
+    def settimeout(self, _t):
+        pass
+
+    def setblocking(self, _f):
+        pass
+
+    def recv(self, size):
+        if self._inbox:
+            chunk = bytes(self._inbox[:size])
+            del self._inbox[:size]
+            return chunk
+        # A non-blocking socket with nothing buffered raises BlockingIOError;
+        # both _drain and SocketTransport.read expect that.
+        raise BlockingIOError()
+
+    def close(self):
+        self.closed = True
+
+
+def test_load_dump_framed_batches_commands_and_saves(monkeypatch):
+    sock = FramedFakeSock()
+    monkeypatch.setattr(sitl.socket, "create_connection", lambda *a, **k: sock)
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    # The framed load only cares what we send; skip the real save drain.
+    monkeypatch.setattr(sitl, "_drain", lambda *a, **k: b"")
+
+    dump = "\n".join([
+        "# version",
+        "batch start",
+        "board_name BETAFPVF405",
+        "resource MOTOR 1 B00",
+        "timer A00 AF1",
+        "dma pin A00 0",
+        "set craft_name = U250_FPV",
+        "save",
+    ])
+    sitl.load_dump_over_cli("127.0.0.1", 5761, dump, framed=True)
+
+    sent = bytes(sock.sent)
+    # The link is validated with a read-only framed `version` probe first.
+    assert b"\x02version\x0a\x03" in sent
+    # Commands are sent inside STX..ETX frames, LF-separated, many per frame.
+    assert b"set craft_name = U250_FPV" in sent
+    assert b"board_name BETAFPVF405" in sent
+    # Batched, NOT one frame per command: the two config lines above fit one
+    # frame, so the whole load is version + one data frame + save = 3 frames
+    # (3 ETX), far fewer than one-per-command would give.
+    assert sent.count(b"\x03") <= 4
+    # `save` is driven exactly once, as its own frame, to persist + reboot.
+    assert b"\x02save\x0a\x03" in sent
+    # The framed CLI never enters raw `#` mode, and framing/comments/HW maps are
+    # dropped just like the legacy path.
+    assert b"#\r" not in sent
+    assert b"resource" not in sent
+    assert b"timer" not in sent
+    assert b"batch start" not in sent
+    assert sock.closed
+
+
+def test_supports_framed_cli_picks_per_firmware_generation():
+    from drone_check.cli_session import supports_framed_cli
+    # Legacy raw-`#` firmware.
+    assert supports_framed_cli("4.4.0") is False
+    assert supports_framed_cli("4.5.0") is False
+    assert supports_framed_cli("4.5.3") is False
+    # Framed MSP-CLI firmware (>= 4.5.4 and the 2025.x year-based scheme).
+    assert supports_framed_cli("4.5.4") is True
+    assert supports_framed_cli("2025.12.2") is True
+    # Unparseable / missing → fail safe to legacy.
+    assert supports_framed_cli("") is False
+    assert supports_framed_cli(None) is False
+
+
+def test_find_msp_port_picks_msp_speaking_uart(monkeypatch):
+    # A capture can put MSP on a UART other than UART1 (e.g. `serial UART6 ...`),
+    # which SITL maps to tcp+5. The proxy must target whatever actually speaks MSP.
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(sitl, "_speaks_msp", lambda host, port: port == 5766)
+    assert sitl._find_msp_port("127.0.0.1", 5761, count=8, timeout=5) == 5766
+
+
+def test_find_msp_port_prefers_uart1_when_it_speaks_msp(monkeypatch):
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    # UART1 (the common case) and UART6 both answer; UART1 is scanned first.
+    monkeypatch.setattr(sitl, "_speaks_msp", lambda host, port: port in (5761, 5766))
+    assert sitl._find_msp_port("127.0.0.1", 5761, count=8, timeout=5) == 5761
+
+
+def test_find_msp_port_none_when_no_port_answers(monkeypatch):
+    monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(sitl, "_speaks_msp", lambda host, port: False)
+    assert sitl._find_msp_port("127.0.0.1", 5761, count=8, timeout=0.01) is None
+
+
 def test_connect_cli_retries_after_reset(monkeypatch):
     # The first connection is reset (as the cold-WSL localhost relay can do);
     # the second succeeds and reaches the CLI prompt.

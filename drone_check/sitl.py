@@ -19,10 +19,14 @@ How it works (Windows host + SITL built for Linux, run under WSL):
        eeprom with the capture's configuration.
 * The web Configurator (2025.12+) speaks WebSocket only, so we run a ``websockify``
   proxy ``ws://127.0.0.1:6761`` → ``tcp://127.0.0.1:5761``.
+* The dump is fed through whichever CLI dialect the firmware uses — the legacy
+  raw ``#`` prompt (Betaflight < 4.5.4 / INAV) or the framed MSP-CLI (Betaflight
+  >= 4.5.4 / 2025.x, which ignores the raw ``#`` byte). See
+  :func:`drone_check.cli_session.supports_framed_cli`.
 
-Known limitation: stock SITL builds omit VTX support, so VTX settings are not
-visible in this view. drone-check's own dump analysis remains the authoritative
-source for VTX power. (A VTX-enabled SITL build is a planned follow-up.)
+The SITL binaries built by ``scripts/build_sitl.sh`` re-enable the VTX config
+table, so ``vtxtable`` power values/labels are visible in this view too;
+drone-check's own dump analysis remains the authoritative source for VTX power.
 """
 
 from __future__ import annotations
@@ -35,7 +39,16 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .cli_session import (
+    CliError,
+    CliSession,
+    ETX,
+    LF,
+    STX,
+    supports_framed_cli,
+)
 from .config import Settings
+from .transport import SocketTransport
 
 # Spawn long-lived children (the WSL/SITL process and the websockify proxy) in
 # their own process group on Windows. Otherwise they share drone-check's console
@@ -105,16 +118,13 @@ def _connect_cli(host: str, port: int, attempts: int = 4) -> socket.socket:
     raise SitlError(f"could not open SITL CLI on {host}:{port}: {last_exc}")
 
 
-def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -> None:
-    """Enter the SITL CLI, replay a ``dump all`` batch and persist it with ``save``.
+def _dump_commands(dump_text: str) -> list[str]:
+    """Filter a ``dump all`` to the config commands SITL should replay.
 
-    Comment and ``batch``/``save`` framing lines are dropped — we drive ``save``
-    ourselves. ``resource``/timer/dma/board lines are sent as-is; SITL rejects
-    them (no GPIO on a host target), which is harmless for viewing the config.
-
-    Lines are sent in chunks well under SITL's 1400-byte RX buffer, draining the
-    echo between chunks for flow control. ``progress_cb(sent, total)`` (if given)
-    is called after each chunk so the UI can show progress.
+    Drops comments and ``batch``/``save`` framing (we drive ``save`` ourselves)
+    and the hardware pin/peripheral maps SITL always rejects (``resource`` /
+    ``timer`` / ``dma`` — no GPIO on a host target). Skipping the latter changes
+    nothing in the loaded config and shaves time off the load.
     """
     cmds = []
     for raw in dump_text.splitlines():
@@ -123,12 +133,39 @@ def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -
             continue
         if line in ("batch start", "batch end", "save"):
             continue
-        # Hardware pin/peripheral maps that SITL always rejects (no GPIO on a
-        # host target). Skipping them changes nothing in the loaded config and
-        # shaves time off the load.
         if line.startswith(("resource ", "timer ", "dma ")):
             continue
         cmds.append(line)
+    return cmds
+
+
+def load_dump_over_cli(host: str, port: int, dump_text: str,
+                       framed: bool = False, progress_cb=None) -> None:
+    """Replay a ``dump all`` into SITL's CLI and persist it with ``save``.
+
+    Two CLI dialects exist, exactly as on real hardware (see
+    :func:`drone_check.cli_session.supports_framed_cli`):
+
+    * legacy raw ``#`` prompt (Betaflight < 4.5.4 / INAV) — enter CLI, send the
+      commands, ``save``;
+    * framed MSP-CLI (Betaflight >= 4.5.4 / 2025.x) — newer firmware ignores the
+      raw ``#`` byte, so each command is an ``STX..ETX`` frame instead.
+
+    ``progress_cb(sent, total)`` (if given) is called as the load proceeds.
+    """
+    cmds = _dump_commands(dump_text)
+    if framed:
+        _load_dump_framed(host, port, cmds, progress_cb)
+    else:
+        _load_dump_legacy(host, port, cmds, progress_cb)
+
+
+def _load_dump_legacy(host: str, port: int, cmds: list[str], progress_cb=None) -> None:
+    """Load a dump via the legacy raw-``#`` CLI (Betaflight < 4.5.4 / INAV).
+
+    Lines are sent in chunks well under SITL's 1400-byte RX buffer, draining the
+    echo between chunks for flow control.
+    """
     total = len(cmds)
 
     # Establish the CLI session with a few retries: right after a cold WSL boot
@@ -162,6 +199,105 @@ def load_dump_over_cli(host: str, port: int, dump_text: str, progress_cb=None) -
         sock.close()
 
 
+def _connect_framed(host: str, port: int, attempts: int = 4) -> socket.socket:
+    """Open a TCP connection to SITL's framed MSP-CLI, validating the link.
+
+    No CLI mode is entered (newer firmware ignores the raw ``#`` byte). A
+    read-only ``version`` probe per attempt confirms the framed CLI is actually
+    answering before any config is sent — so a cold-WSL first-connection reset
+    can't silently drop a setting. Returns a socket ready for the load.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        sock = None
+        try:
+            sock = socket.create_connection((host, port), timeout=5)
+            cli = CliSession(SocketTransport(sock), idle_timeout=1.0, max_wait=8.0)
+            cli.command_framed("version")  # raises CliError if no ETX reply
+            sock.settimeout(0.2)
+            return sock
+        except (OSError, CliError) as exc:
+            last_exc = exc
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        time.sleep(0.5 * (attempt + 1))
+    raise SitlError(f"could not open SITL framed CLI on {host}:{port}: {last_exc}")
+
+
+def _read_etx_acks(sock: socket.socket, n: int,
+                   total: float = 15.0, idle: float = 3.0) -> int:
+    """Read framed replies until ``n`` ETX terminators have been seen.
+
+    Each framed CLI command — even one SITL rejects — answers with exactly one
+    ``STX..ETX`` frame, so counting ETX bytes counts *processed* commands. Returns
+    the number actually seen (``< n`` only if it timed out)."""
+    sock.setblocking(False)
+    seen = 0
+    start = last = time.monotonic()
+    while seen < n:
+        now = time.monotonic()
+        if now - start > total or now - last > idle:
+            break
+        try:
+            chunk = sock.recv(8192)
+            if chunk:
+                seen += chunk.count(ETX)
+                last = now
+            else:
+                time.sleep(0.005)
+        except BlockingIOError:
+            time.sleep(0.005)
+    return seen
+
+
+def _load_dump_framed(host: str, port: int, cmds: list[str], progress_cb=None) -> None:
+    """Load a dump via the framed MSP-CLI (Betaflight >= 4.5.4 / 2025.x).
+
+    SITL's framed CLI runs *every* LF-separated line inside one ``STX..ETX``
+    frame and answers with a single closing ETX, so we pack many commands into
+    each frame (kept under SITL's 1400-byte RX ring, which has no backpressure
+    and silently overwrites unread bytes) and wait for that one ETX before
+    sending the next frame. Waiting for the ETX is true flow control — the frame
+    is fully processed before the next is sent, so the ring never overruns and
+    no config line is silently lost.
+
+    Batching is what makes this fast: one command per frame is correct but ~30x
+    slower, because each frame is gated by SITL's MSP-poll cadence (~20 ms) — a
+    ~1200-line dump then takes ~25 s, versus ~1 s when batched. ``save`` reboots
+    before it can send its closing ETX, so it is sent without waiting; the caller
+    waits for the process to exit.
+    """
+    total = len(cmds)
+    sock = _connect_framed(host, port)
+    try:
+        i = 0
+        frame_limit = 1024  # < 1400-byte RX buffer, incl. STX/LF/ETX framing
+        while i < total:
+            frame = bytearray(STX)
+            while i < total:
+                line = cmds[i].encode("utf-8", "replace") + LF
+                # Leave room for the closing ETX; always include at least one
+                # line even if it alone would exceed the soft limit.
+                if len(frame) + len(line) + 1 > frame_limit and len(frame) > 1:
+                    break
+                frame += line
+                i += 1
+            frame += ETX
+            sock.sendall(frame)
+            # One closing ETX per frame proves SITL ran the whole batch.
+            _read_etx_acks(sock, 1)
+            if progress_cb is not None:
+                progress_cb(i, total)
+
+        sock.sendall(STX + b"save" + LF + ETX)
+        _drain(sock, 3.0)
+    finally:
+        sock.close()
+
+
 def _wait_port(host: str, port: int, timeout: float) -> bool:
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -179,6 +315,43 @@ def _port_free(host: str, port: int) -> bool:
             return False
     except OSError:
         return True
+
+
+def _speaks_msp(host: str, port: int) -> bool:
+    """True if ``port`` answers an MSP request (an MSP-capable serial port).
+
+    SITL maps each UART to TCP ``5760 + n``; the CLI/MSP can live on whichever
+    UART the loaded config assigns ``MSP`` to (not necessarily UART1). We probe
+    with ``MSP_API_VERSION`` and check for an MSP reply header (``$M>`` for v1,
+    ``$X>`` for v2)."""
+    try:
+        with socket.create_connection((host, port), timeout=1) as s:
+            s.sendall(b"$M<\x00\x01\x01")  # MSP_API_VERSION, no payload
+            s.settimeout(0.6)
+            try:
+                reply = s.recv(64)
+            except OSError:
+                return False
+            return reply.startswith(b"$M>") or reply.startswith(b"$X>")
+    except OSError:
+        return False
+
+
+def _find_msp_port(host: str, base_port: int, count: int, timeout: float) -> int | None:
+    """Wait for the serve-phase SITL to come up and return the UART TCP port that
+    speaks MSP, so the proxy targets it wherever the loaded config put MSP.
+
+    ``base_port`` is UART1's TCP port; ``count`` UARTs are scanned (UART1..UARTn).
+    UART1 is tried first so the common case (MSP on UART1) is picked immediately.
+    """
+    end = time.monotonic() + timeout
+    ports = [base_port + i for i in range(count)]
+    while time.monotonic() < end:
+        for p in ports:
+            if _speaks_msp(host, p):
+                return p
+        time.sleep(0.3)
+    return None
 
 
 # ---- session ----------------------------------------------------------------
@@ -313,6 +486,15 @@ class SitlRunner:
             return
         self._wsl_ownership_checked = True
         self._we_started_wsl = not self._wsl_running()
+
+    def _wait_port_free(self, host: str, port: int,
+                        attempts: int = 40, delay: float = 0.15) -> bool:
+        """Wait (up to ``attempts * delay`` s) for ``port`` to become free."""
+        for _ in range(attempts):
+            if _port_free(host, port):
+                return True
+            time.sleep(delay)
+        return False
 
     # -- lifecycle --------------------------------------------------------
 
@@ -486,6 +668,7 @@ class SitlRunner:
                 self._progress("loading", "Loading configuration…", 0, 0, gen=gen)
                 load_dump_over_cli(
                     host, tcp, dump_text,
+                    framed=supports_framed_cli(version),
                     progress_cb=lambda sent, total: self._progress(
                         "loading", "Loading configuration…", sent, total, gen=gen),
                 )
@@ -500,10 +683,16 @@ class SitlRunner:
                         loader.terminate()
             self._ensure_current(gen)
             # Give the OS a moment to release the port after the reboot/exit.
-            for _ in range(40):
-                if _port_free(host, tcp):
-                    break
-                time.sleep(0.15)
+            if not self._wait_port_free(host, tcp):
+                # The load-phase SITL didn't exit on its own (e.g. `save` didn't
+                # trigger a clean reboot). The eeprom write is long finished by
+                # now, so force it down and wait again — otherwise phase 2 cannot
+                # bind the port and fails with "did not start (serve phase)".
+                try:
+                    self._wsl("pkill -x betaflight_SITL", capture=True, timeout=15)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                self._wait_port_free(host, tcp)
             # Mark the eeprom as fully loaded so future views reuse it.
             try:
                 self._wsl(f"touch {marker}", capture=True, timeout=15)
@@ -514,7 +703,14 @@ class SitlRunner:
         self._ensure_current(gen)
         self._progress("starting2", "Starting SITL from saved configuration…", gen=gen)
         self._sitl = self._wsl(f"cd {run_dir} && exec {elf} >/dev/null 2>&1")
-        if not _wait_port(host, tcp, timeout=self.s.sitl_boot_timeout):
+        # The loaded config decides which UART carries MSP, and SITL maps each
+        # UART to its own TCP port (UART1=tcp, UART2=tcp+1, …). A capture can put
+        # MSP on a UART other than UART1 (e.g. `serial UART6 ...` with the MSP
+        # bit), so don't assume UART1 — find the port that actually answers MSP
+        # and point the Configurator proxy at it. Otherwise the Configurator
+        # connects to a non-MSP port and times out ("no configuration received").
+        msp_port = _find_msp_port(host, tcp, count=8, timeout=self.s.sitl_boot_timeout)
+        if msp_port is None:
             self._ensure_current(gen)
             self._teardown()
             self._progress("idle", "", starting=False, gen=gen)
@@ -525,7 +721,7 @@ class SitlRunner:
         self._progress("proxy", "Starting Configurator proxy…", gen=gen)
         self._proxy = subprocess.Popen(
             [sys.executable, "-m", "websockify",
-             f"127.0.0.1:{self.s.sitl_ws_port}", f"127.0.0.1:{tcp}"],
+             f"127.0.0.1:{self.s.sitl_ws_port}", f"127.0.0.1:{msp_port}"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=_NEW_PROCESS_GROUP,

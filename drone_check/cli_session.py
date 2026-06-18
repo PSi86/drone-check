@@ -23,6 +23,23 @@ ETX = b"\x03"
 LF = b"\x0a"
 
 
+def supports_framed_cli(version: str | None) -> bool:
+    """Whether a firmware version drives the CLI through the framed MSP-CLI
+    instead of the raw ``#`` prompt.
+
+    Betaflight >= 4.5.4 — including the 2025.x year-based scheme, where 2025 > 4
+    so it compares greater — uses the STX/ETX framed CLI and ignores the raw
+    ``#`` CLI-enter byte. Older firmware (e.g. 4.4.0, 4.5.0–4.5.3) and INAV use
+    the ``#`` prompt. The same rule is used for live capture and for loading a
+    dump into SITL, so both stay consistent across firmware generations.
+    """
+    try:
+        parts = tuple(int(x) for x in (version or "").split(".")[:3])
+    except (ValueError, AttributeError):
+        return False
+    return len(parts) == 3 and parts >= (4, 5, 4)
+
+
 class CliError(Exception):
     """Raised when the CLI does not behave as expected (timeout, truncation)."""
 

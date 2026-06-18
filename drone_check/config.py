@@ -48,8 +48,14 @@ class Settings:
     # Session application log: how many recent entries the web UI keeps/shows.
     log_list_length: int = 100
 
-    # Firmware-hash verification.
-    hash_use_allowlist: bool = True
+    # Firmware-hash verification. The acceptance level maps the (config-
+    # independent) verification facts to the approved/not-approved verdict:
+    #   "whitelist" – only an exact allowlist (official-release) hash
+    #   "official"  – allowlist hash OR any commit that exists in the official
+    #                 repo (default; "all official builds")
+    #   "open"      – never reject an unknown hash
+    hash_acceptance_level: str = "official"
+    # Network toggle for the GitHub existence check (off = fully offline).
     hash_use_github: bool = True
 
     # CLI commands captured (in order) during the CLI phase. `dump all` is the
@@ -109,7 +115,10 @@ def load_settings(path: Path) -> Settings:
     s.log_list_length = int(data.get("log_list_length", s.log_list_length))
 
     hashcfg = data.get("firmware_hash", {}) or {}
-    s.hash_use_allowlist = bool(hashcfg.get("use_allowlist", s.hash_use_allowlist))
+    level = str(hashcfg.get("acceptance_level", s.hash_acceptance_level)).lower()
+    if level not in ("whitelist", "official", "open"):
+        level = s.hash_acceptance_level
+    s.hash_acceptance_level = level
     s.hash_use_github = bool(hashcfg.get("use_github", s.hash_use_github))
 
     if "cli_commands" in data and data["cli_commands"]:

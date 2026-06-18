@@ -64,6 +64,30 @@ def test_stop_on_enter_skipped_without_tty(monkeypatch):
     assert m._install_stop_on_enter(_FakeServer()) is None
 
 
+def test_windows_ctrl_handler_requests_graceful_shutdown():
+    import sys
+
+    import drone_check.__main__ as m
+
+    srv = _FakeServer()
+    handler = m._install_windows_ctrl_handler(srv)
+    if sys.platform != "win32":
+        assert handler is None  # no-op off Windows
+        return
+    try:
+        assert handler is not None
+        # CTRL_C_EVENT (0): request a graceful stop and report it as handled.
+        assert handler(0)
+        assert srv.should_exit is True
+        # A second Ctrl+C falls through so the OS can force-kill a wedged stop.
+        assert not handler(0)
+        # Unrelated control codes are ignored.
+        assert not handler(99)
+    finally:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(handler, False)
+
+
 def test_capture_retry_is_bounded(tmp_path, monkeypatch):
     """A drone that keeps failing while staying plugged in must NOT be retried
     forever — after capture_max_retries extra attempts the worker gives up
