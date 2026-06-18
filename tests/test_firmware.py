@@ -8,8 +8,8 @@ CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 
 def _verifier():
     cfg = load_config(CONFIG_DIR)
-    # offline only: prove the generated allowlist contains real release hashes
-    return FirmwareVerifier(cfg.allowlist, use_allowlist=True, use_github=False)
+    # offline, whitelist-only: prove the generated allowlist contains real hashes
+    return FirmwareVerifier(cfg.allowlist, acceptance_level="whitelist", use_github=False)
 
 
 def test_real_betaflight_release_hash_is_approved():
@@ -32,7 +32,7 @@ def test_unknown_hash_is_rejected_offline():
     assert not v.verify("BTFL", "9.9.9", "77d01ba3b").approved
 
 
-# --- version-bound GitHub check ------------------------------------------------
+# --- acceptance levels + GitHub existence check --------------------------------
 
 class _FakeResp:
     def __init__(self, status, payload=None):
@@ -43,50 +43,75 @@ class _FakeResp:
         return self._payload
 
 
-def _fake_get(tag_to_sha):
-    """Fake httpx.get resolving /commits/<ref> to a SHA via tag_to_sha; 404 else."""
+def _fake_commits(known_hashes):
+    """Fake httpx.get for /commits/<sha>: 200 for a known commit, 404 otherwise."""
+    known = {h.lower() for h in known_hashes}
+
     def get(url, timeout=None, headers=None):
-        ref = url.rstrip("/").split("/")[-1]
-        if ref in tag_to_sha:
-            return _FakeResp(200, {"sha": tag_to_sha[ref]})
+        ref = url.rstrip("/").split("/")[-1].lower()
+        if ref in known:
+            return _FakeResp(200, {"sha": ref + "0" * (40 - len(ref))})
         return _FakeResp(404)
     return get
 
 
-def _github_only():
-    return FirmwareVerifier({}, use_allowlist=False, use_github=True)
+def _verifier_at(level, allowlist=None):
+    return FirmwareVerifier(allowlist or {}, acceptance_level=level, use_github=True)
 
 
-def test_github_approves_exact_release_commit(monkeypatch):
+def test_official_level_approves_existing_repo_commit(monkeypatch):
     import httpx
-    tag_sha = "79065c96ba0bb5cdc675e67d7093e05dab8b330e"  # 2025.12.2 tag
-    monkeypatch.setattr(httpx, "get", _fake_get({"2025.12.2": tag_sha}))
-    r = _github_only().verify("BTFL", "2025.12.2", "79065c96b")
+    monkeypatch.setattr(httpx, "get", _fake_commits({"6f1cac69e"}))
+    r = _verifier_at("official").verify("BTFL", "4.4.0", "6f1cac69e")
     assert r.approved and r.source == "github"
 
 
-def test_github_rejects_real_but_wrong_version_commit(monkeypatch):
+def test_official_level_rejects_nonexistent_commit(monkeypatch):
     import httpx
-    tag_sha = "4605309d8253db0113d4c54d31fe8bd998f46401"  # 4.4.0 release tag
-    monkeypatch.setattr(httpx, "get", _fake_get({"4.4.0": tag_sha}))
-    # 6f1cac69e is a genuine Betaflight commit but NOT the 4.4.0 release: a drone
-    # labelling itself 4.4.0 while running it must NOT pass the version binding.
-    r = _github_only().verify("BTFL", "4.4.0", "6f1cac69e")
+    monkeypatch.setattr(httpx, "get", _fake_commits(set()))  # 404 for everything
+    r = _verifier_at("official").verify("BTFL", "4.4.0", "deadbeef")
+    assert not r.approved and r.source == "none"
+
+
+def test_whitelist_level_rejects_repo_commit_not_in_allowlist(monkeypatch):
+    import httpx
+    # The commit exists in the repo (would pass "official"), but whitelist mode
+    # only approves exact allowlist entries -> not approved, yet still documented
+    # as a github commit (display is config-independent).
+    monkeypatch.setattr(httpx, "get", _fake_commits({"6f1cac69e"}))
+    r = _verifier_at("whitelist").verify("BTFL", "4.4.0", "6f1cac69e")
     assert not r.approved
-    assert "not the 4.4.0 release commit" in r.detail
+    assert r.source == "github"
 
 
-def test_github_rejects_unknown_version_tag(monkeypatch):
+def test_open_level_approves_unknown_hash(monkeypatch):
     import httpx
-    monkeypatch.setattr(httpx, "get", _fake_get({}))  # every ref 404s
-    r = _github_only().verify("BTFL", "9.9.9", "deadbeef")
-    assert not r.approved
-    assert "no release tag" in r.detail
+    monkeypatch.setattr(httpx, "get", _fake_commits(set()))  # unknown everywhere
+    r = _verifier_at("open").verify("BTFL", "4.4.0", "deadbeef")
+    assert r.approved          # open never rejects
+    assert r.source == "none"  # but documents that it was not found
 
 
-def test_github_accepts_v_prefixed_tag(monkeypatch):
+def test_source_is_independent_of_acceptance_level(monkeypatch):
     import httpx
-    tag_sha = "abcdef1234567890abcdef1234567890abcdef12"
-    monkeypatch.setattr(httpx, "get", _fake_get({"v1.2.3": tag_sha}))
-    r = _github_only().verify("BTFL", "1.2.3", "abcdef123")
-    assert r.approved
+    monkeypatch.setattr(httpx, "get", _fake_commits({"6f1cac69e"}))
+    results = {lvl: _verifier_at(lvl).verify("BTFL", "4.4.0", "6f1cac69e")
+              for lvl in ("whitelist", "official", "open")}
+    # Same documented source regardless of level...
+    assert {r.source for r in results.values()} == {"github"}
+    # ...but the verdict differs by level.
+    assert results["whitelist"].approved is False
+    assert results["official"].approved is True
+    assert results["open"].approved is True
+
+
+def test_use_github_false_skips_network(monkeypatch):
+    import httpx
+
+    def boom(*a, **k):
+        raise AssertionError("network must not be used when use_github is false")
+
+    monkeypatch.setattr(httpx, "get", boom)
+    v = FirmwareVerifier({}, acceptance_level="official", use_github=False)
+    r = v.verify("BTFL", "4.4.0", "6f1cac69e")
+    assert not r.approved and r.source == "none"
