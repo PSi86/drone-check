@@ -142,8 +142,16 @@ WSL — only exiting `serve` does.
    - start SITL with a fresh `eeprom.bin`, push the dump over the CLI (TCP 5761)
      in flow-controlled chunks, then `save` — SITL writes the eeprom and exits;
    - the populated eeprom is marked loaded and reused next time.
+
+   The CLI dialect matches the firmware, exactly as on real hardware: the legacy
+   raw `#` prompt for Betaflight < 4.5.4 / INAV, and the framed MSP-CLI
+   (`STX <cmd> LF ETX`) for Betaflight ≥ 4.5.4 and the 2025.x releases, which
+   ignore the raw `#` byte.
 3. **Serve.** Relaunch SITL in the same directory — it boots from the populated
-   eeprom — and start a `websockify` proxy `ws://127.0.0.1:6761 → tcp:5761`.
+   eeprom — and start a `websockify` proxy `ws://127.0.0.1:6761 → tcp:<MSP port>`.
+   The loaded config decides which UART carries MSP, and SITL maps each UART to
+   its own TCP port (UART1 = 5761 … UART6 = 5766), so the proxy is pointed at
+   whichever port actually answers MSP — not assumed to be UART1.
 
 Progress is exposed via `GET /api/sitl/status` (phase + line counter); the logs
 page polls it for the progress bar. `POST /api/sitl/stop` ends the session.
@@ -154,9 +162,13 @@ SITL's TCP receive buffer is a 1400-byte ring with **no overflow protection** an
 no backpressure on firmware consumption. Pasting the whole ~33 KB dump at once
 would overwrite unprocessed bytes and **silently corrupt the loaded config** —
 unacceptable for an inspection tool. So the loader sends the dump in chunks under
-1400 bytes and waits for the CLI echo (which proves SITL drained the buffer)
-before sending the next. Lines SITL always rejects (`resource` / `timer` / `dma`
-pin maps) are skipped. Correctness was verified by sampling settings spread
+1400 bytes and waits for the firmware to finish each chunk before sending the
+next: on the legacy CLI it waits for the command echo; on the framed CLI it waits
+until SITL has acked every command in the chunk (one returned `STX..ETX` frame
+per command). A fixed time-based pause is **not** enough — it can elapse while
+SITL is still processing, so the next chunk overruns the ring and config lines
+(e.g. `serial`) are silently dropped. Lines SITL always rejects (`resource` /
+`timer` / `dma` pin maps) are skipped. Correctness was verified by sampling settings spread
 across a real dump against the loaded SITL config.
 
 ### Caching
