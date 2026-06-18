@@ -101,6 +101,17 @@ the ARM toolchain even for the host SITL target.
    when done (only one SITL session runs at a time; starting another replaces it,
    and the session is also stopped on server shutdown).
 
+### WSL lifecycle
+
+WSL is **not** touched until you actually use the feature: it is started on the
+**first** "View in Configurator" click (the footer shows "Starting WSL…"). It
+keeps running between sessions, and is **terminated when drone-check exits** —
+but only if drone-check was the one that started it. A WSL instance you already
+had running (e.g. for other work) is left alone, and `--terminate <distro>` is
+used (never `--shutdown`), so other distros such as `docker-desktop` keep
+running. Stopping a single SITL session (the bar's stop button) does **not** stop
+WSL — only exiting `serve` does.
+
 ## How it works (implementation)
 
 `drone_check/sitl.py` — `SitlRunner` — orchestrates one session at a time:
