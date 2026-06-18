@@ -93,7 +93,9 @@ class FramedFakeSock:
             chunk = bytes(self._inbox[:size])
             del self._inbox[:size]
             return chunk
-        raise socket.timeout()
+        # A non-blocking socket with nothing buffered raises BlockingIOError;
+        # both _drain and SocketTransport.read expect that.
+        raise BlockingIOError()
 
     def close(self):
         self.closed = True
@@ -103,6 +105,8 @@ def test_load_dump_framed_uses_stx_etx_and_save(monkeypatch):
     sock = FramedFakeSock()
     monkeypatch.setattr(sitl.socket, "create_connection", lambda *a, **k: sock)
     monkeypatch.setattr(sitl.time, "sleep", lambda *_: None)
+    # The framed load only cares what we send; skip the real inter-chunk drains.
+    monkeypatch.setattr(sitl, "_drain", lambda *a, **k: b"")
 
     dump = "\n".join([
         "# version",

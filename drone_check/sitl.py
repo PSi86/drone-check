@@ -230,31 +230,36 @@ def _connect_framed(host: str, port: int, attempts: int = 4) -> socket.socket:
 def _load_dump_framed(host: str, port: int, cmds: list[str], progress_cb=None) -> None:
     """Load a dump via the framed MSP-CLI (Betaflight >= 4.5.4 / 2025.x).
 
-    Each command is one ``STX..ETX`` frame; we wait for the framed reply before
-    sending the next, which also flow-controls the load (SITL's RX ring has no
-    backpressure). ``save`` writes the eeprom and reboots before it can send its
-    closing ETX, so it is sent raw and not awaited — the caller waits for the
-    process to exit.
+    Each command is wrapped in one ``STX..ETX`` frame. Frames are sent in chunks
+    kept under SITL's 1400-byte RX ring (which has no backpressure), draining the
+    framed replies between chunks for flow control — exactly like the legacy
+    path, just framed. Doing one round-trip *per line* would make a ~1400-line
+    dump take minutes; chunking keeps it to ~15 s. ``save`` writes the eeprom and
+    reboots before it can send its closing ETX, so it is sent without waiting —
+    the caller waits for the process to exit.
     """
     total = len(cmds)
     sock = _connect_framed(host, port)
-    transport = SocketTransport(sock)
-    cli = CliSession(transport, idle_timeout=1.0, max_wait=15.0)
     try:
-        for i, cmd in enumerate(cmds, 1):
-            try:
-                cli.command_framed(cmd)
-            except CliError:
-                # A line SITL rejects may not return a clean ETX; tolerate it and
-                # keep going — the same lines are harmless on a host target.
-                pass
+        i = 0
+        chunk_limit = 1024  # < 1400-byte RX buffer, incl. STX/LF/ETX framing
+        while i < total:
+            chunk = bytearray()
+            while i < total and len(chunk) < chunk_limit:
+                chunk += STX + cmds[i].encode("utf-8", "replace") + LF + ETX
+                i += 1
+            sock.sendall(chunk)
+            # Drain the framed replies: receiving them proves SITL's CLI task
+            # consumed the chunk, so the outstanding bytes never exceed one chunk.
+            _drain(sock, 0.5, idle=0.02)
             if progress_cb is not None:
                 progress_cb(i, total)
-        # `save` reboots before sending its closing ETX, so don't wait for one.
-        transport.write(STX + b"save" + LF + ETX)
-        time.sleep(0.5)
+
+        _drain(sock, 1.0)
+        sock.sendall(STX + b"save" + LF + ETX)
+        _drain(sock, 3.0)
     finally:
-        transport.close()
+        sock.close()
 
 
 def _wait_port(host: str, port: int, timeout: float) -> bool:
@@ -408,6 +413,15 @@ class SitlRunner:
             return
         self._wsl_ownership_checked = True
         self._we_started_wsl = not self._wsl_running()
+
+    def _wait_port_free(self, host: str, port: int,
+                        attempts: int = 40, delay: float = 0.15) -> bool:
+        """Wait (up to ``attempts * delay`` s) for ``port`` to become free."""
+        for _ in range(attempts):
+            if _port_free(host, port):
+                return True
+            time.sleep(delay)
+        return False
 
     # -- lifecycle --------------------------------------------------------
 
@@ -596,10 +610,16 @@ class SitlRunner:
                         loader.terminate()
             self._ensure_current(gen)
             # Give the OS a moment to release the port after the reboot/exit.
-            for _ in range(40):
-                if _port_free(host, tcp):
-                    break
-                time.sleep(0.15)
+            if not self._wait_port_free(host, tcp):
+                # The load-phase SITL didn't exit on its own (e.g. `save` didn't
+                # trigger a clean reboot). The eeprom write is long finished by
+                # now, so force it down and wait again — otherwise phase 2 cannot
+                # bind the port and fails with "did not start (serve phase)".
+                try:
+                    self._wsl("pkill -x betaflight_SITL", capture=True, timeout=15)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+                self._wait_port_free(host, tcp)
             # Mark the eeprom as fully loaded so future views reuse it.
             try:
                 self._wsl(f"touch {marker}", capture=True, timeout=15)
