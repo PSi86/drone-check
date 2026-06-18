@@ -59,8 +59,13 @@ cache. This is the agreed approach; see
    WSL, from the repo):
 
    ```bash
-   bash scripts/build_sitl.sh 4.4.0 4.5.4
+   bash scripts/build_sitl.sh 4.4.0 4.5.4 2025.12.2
    ```
+
+   `<version>` is a Betaflight git tag. Both the old semver tags (e.g. `4.4.0`)
+   and the newer date-based tags (e.g. `2025.12.2`) are supported — the script
+   adapts to the source-tree layout each firmware generation uses (see the
+   patches table below).
 
    Each version is cloned, patched and built into
    `~/.cache/drone-check/sitl/<version>/betaflight_SITL.elf`. The first build of a
@@ -73,16 +78,29 @@ WebSocket-only web Configurator to SITL's TCP port.
 ### What `build_sitl.sh` patches
 
 The stock SITL target is meant for the gazebo simulator and is missing things an
-inspector needs. The script applies three source patches before building:
+inspector needs. The script applies these source patches before building:
 
 | Patch | Why |
 |-------|-----|
 | `-Werror` → `-Wno-error` | Modern host GCC is far newer than the (often years-old) sources and would otherwise fail the build on new warnings. |
 | Enable `USE_VTX_COMMON` / `USE_VTX_CONTROL` / `USE_VTX_TABLE` | Stock SITL compiles VTX out, so the `vtxtable` (the anti-cheat-relevant power values/labels) would be invisible. The table is pure config — no VTX device is needed to show it. |
-| `dyad_setUpdateTimeout(0.5f)` → `0.01f` | SITL's TCP poll timeout otherwise flushes the CLI echo only ~twice a second, throttling the dump load to ~45 s. 0.01 s matches the 100 Hz serial task. |
+| `dyad_setUpdateTimeout(0.5f)` → `0.01f` | SITL's TCP poll timeout otherwise flushes the CLI echo only ~twice a second, throttling the dump load to ~45 s. 0.01 s matches the 100 Hz serial task. (Newer firmware already ships `0.01f`, so this is a no-op there.) |
 
-It also runs `make arm_sdk_install` for older firmware whose Makefile validates
-the ARM toolchain even for the host SITL target.
+The SITL source tree was reorganised between firmware generations, so the script
+locates each patch target adaptively: 4.4.x keeps SITL under
+`src/main/target/SITL/`, while 2024.x+ (incl. the date-based `2025.x` releases)
+moved it to `src/platform/SIMULATOR/`.
+
+It also performs two build prerequisites automatically:
+
+- **`make configs`** — newer firmware (2024.x+) keeps board configs in a separate
+  repo pulled in as the `src/config` git submodule, and the build refuses to
+  start until it is hydrated. SITL needs no board config, but the Makefile
+  structurally requires the directory to exist.
+- **`make arm_sdk_install`** — the build validates the ARM toolchain even for the
+  host SITL target. The SDK is fetched into the repo's `tools/` dir (no `sudo`,
+  no `PATH` change). The rule moved from the top `Makefile` (4.4.x) to
+  `mk/tools.mk` (2024.x+), so the script searches both.
 
 ## Using it
 

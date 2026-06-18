@@ -137,8 +137,12 @@ WSL):
 
 ```bash
 sudo apt-get install -y build-essential ruby git
-bash scripts/build_sitl.sh 4.4.0 4.5.4
+bash scripts/build_sitl.sh 4.4.0 4.5.4 2025.12.2
 ```
+
+Both old semver tags (e.g. `4.4.0`) and the newer date-based tags (e.g.
+`2025.12.2`) work — the build script adapts to the different source-tree layout
+each firmware generation uses.
 
 Then on `/logs`, click **View in Configurator** and connect the Betaflight web
 Configurator (manual connection) to `ws://127.0.0.1:6761`.
