@@ -33,6 +33,11 @@ operator set a *fallback* pilot name that is used only for the folder label when
 the FC reports none — it never alters the captured data files. The folder naming
 is configurable via `folder_template`.
 
+Beyond live capture, the web UI has a **logs page** (`/logs`) to browse past
+captures and **view any capture's configuration in the real Betaflight
+Configurator** via a version-matched SITL instance — see
+[Logs page & "view in Configurator"](#logs-page--view-in-configurator).
+
 ## Requirements
 
 - **Python 3.10+**
@@ -104,48 +109,28 @@ For the first run against real hardware, follow [HARDWARE_TEST.md](HARDWARE_TEST
 
 ## Logs page & "view in Configurator"
 
-The web UI has a second page at `/logs` (link in the header) that lists every
-captured drone in the log directory, newest first. It is searchable (pilot,
-craft, UID, firmware version, folder) and filterable by verdict and firmware
-variant. Each row offers:
+The web UI has a second page at **`/logs`** (link in the header) that lists every
+capture in the log directory, newest first — searchable (pilot, craft, UID,
+firmware version, folder) and filterable by verdict and firmware variant. Each
+row can **open the capture folder** and **view the configuration in the real
+Betaflight Configurator**: drone-check loads the capture's `dump all` into a
+version-matched **Betaflight SITL** instance (run under WSL) so an inspector sees
+exactly what the drone owner would see, with all firmware-version-specific GUI
+behaviour handled by the real Configurator.
 
-- **Open folder** — opens the immutable capture folder in the OS file manager.
-- **View in Configurator** — loads the capture's `dump all` into a
-  version-matched **Betaflight SITL** instance so the real Betaflight web
-  Configurator can connect and show exactly what the drone owner would see. All
-  firmware-version-specific GUI behaviour is then handled by the real
-  Configurator. After ~30 s a bar shows the connect address; in the web
-  Configurator enable *manual connection* and connect to `ws://127.0.0.1:6761`.
-
-### Setup for "view in Configurator" (one-time)
-
-SITL is built from the firmware source for the matching version and run under
-**WSL** (the binary is a Linux host process). drone-check never builds — it only
-selects a pre-built binary from a cache.
+One-time setup (build the SITL binaries for the versions you inspect, inside
+WSL):
 
 ```bash
-# inside WSL (Ubuntu), once:
 sudo apt-get install -y build-essential ruby git
-# build the SITL versions you need (matches the firmware version of your captures):
 bash scripts/build_sitl.sh 4.4.0 4.5.4
 ```
 
-`websockify` (a Python dependency) bridges the WebSocket-only web Configurator
-to SITL's TCP port. Configure under `sitl:` in `config/settings.yaml`.
+Then on `/logs`, click **View in Configurator** and connect the Betaflight web
+Configurator (manual connection) to `ws://127.0.0.1:6761`.
 
-`build_sitl.sh` patches the SITL target to compile in the **VTX config table**
-(stock SITL omits it), so the Configurator shows the drone's `vtxtable`
-powervalues/powerlabels — the anti-cheat-relevant data. drone-check's own dump
-analysis still remains the authoritative source for VTX power.
-
-The first "view in Configurator" for a capture takes ~15 s (the whole `dump all`
-is fed through SITL's CLI; the page shows live progress). `build_sitl.sh` lowers
-SITL's TCP poll timeout so the CLI is not throttled. The result is cached per
-capture, so viewing the same drone again is near-instant; the cache is
-invalidated automatically when the SITL binary is rebuilt.
-
-**Limitation:** SITL has no real motor outputs, so the motor and mixer tabs show
-warnings. That is expected and does not affect the inspection.
+See **[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)** for the full guide: setup,
+how it works, the VTX config patch, caching, configuration and troubleshooting.
 
 ## Output
 
