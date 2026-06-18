@@ -49,6 +49,15 @@ build_one() {
     sed -i "s/ -Werror / -Wno-error /g" Makefile
   fi
 
+  # SITL polls its TCP UART with a 0.5 s update timeout, so CLI echo is only
+  # flushed every ~0.5 s when no new bytes arrive — which throttles loading a
+  # dump line-by-line to a crawl. Match it to the 100 Hz serial task (10 ms) so
+  # loading a configuration is several times faster.
+  local sitl_main="src/main/target/SITL/target.c"
+  if [ -f "$sitl_main" ]; then
+    sed -i "s/dyad_setUpdateTimeout(0.5f)/dyad_setUpdateTimeout(0.01f)/" "$sitl_main"
+  fi
+
   # The stock SITL target compiles VTX out (USE_VTX is never defined for SITL),
   # so the VTX config table is invisible in the Configurator — exactly the data
   # an inspector most needs. Re-enable the VTX *config* stack (table only, no
