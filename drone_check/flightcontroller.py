@@ -35,6 +35,7 @@ class RealFlightController:
         self._t = transport
         self._msp = MspClient(transport)
         self._cli = CliSession(transport, idle_timeout=idle_timeout, max_wait=max_wait)
+        self._version = ""  # FC version string, cached by identify()
 
     @classmethod
     def open(
@@ -54,9 +55,27 @@ class RealFlightController:
         return cls(transport, idle_timeout=idle_timeout, max_wait=max_wait)
 
     def identify(self) -> MspIdentity:
-        return self._msp.identify()
+        ident = self._msp.identify()
+        self._version = ident.version or ""
+        return ident
+
+    def _supports_framed_cli(self) -> bool:
+        """Betaflight >= 4.5.4 (including the 2025.x year-based scheme) drives the
+        CLI through the framed MSP-CLI protocol; the modern Configurator uses it
+        and the raw ``#`` prompt is unreliable on these builds. Older firmware
+        (e.g. 4.4.0) still uses ``#``."""
+        try:
+            parts = tuple(int(x) for x in self._version.split(".")[:3])
+        except (ValueError, AttributeError):
+            return False
+        return len(parts) == 3 and parts >= (4, 5, 4)
 
     def run_cli(self, commands: list[str]) -> dict[str, str]:
+        if self._supports_framed_cli():
+            # Framed CLI: each command is self-contained (STX..ETX), so there is
+            # no CLI mode to enter or exit and nothing reboots.
+            return {cmd: self._cli.command_framed(cmd) for cmd in commands}
+
         outputs: dict[str, str] = {}
         self._cli.enter()
         try:

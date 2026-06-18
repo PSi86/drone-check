@@ -25,7 +25,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from .applog import AppLog
 from . import captures
 from .config import AppConfig
-from .sitl import SitlError, SitlRunner
+from .sitl import SitlCancelled, SitlError, SitlRunner
 from .flightcontroller import FakeFlightController, RealFlightController
 from .orchestrator import Orchestrator
 from . import serialwatch
@@ -123,19 +123,26 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
             applog.info("demo mode: serial watcher disabled (use Run demo)")
         yield
         stop_flag.set()
-        sitl.stop()
+        # End the SITL session and, if drone-check started WSL, stop WSL too.
+        sitl.shutdown()
         applog.info("session stopping")
         applog.close()
 
     app = FastAPI(title="drone-check", lifespan=lifespan)
 
+    # The page HTML carries its JS/CSS inline, so it must never be cached by the
+    # browser — otherwise a stale copy keeps running after we ship a fix.
+    _NO_CACHE = {"Cache-Control": "no-store, must-revalidate"}
+
     @app.get("/")
     async def index() -> HTMLResponse:
-        return HTMLResponse((_WEB_DIR / "index.html").read_text(encoding="utf-8"))
+        return HTMLResponse((_WEB_DIR / "index.html").read_text(encoding="utf-8"),
+                            headers=_NO_CACHE)
 
     @app.get("/logs")
     async def logs_page() -> HTMLResponse:
-        return HTMLResponse((_WEB_DIR / "logs.html").read_text(encoding="utf-8"))
+        return HTMLResponse((_WEB_DIR / "logs.html").read_text(encoding="utf-8"),
+                            headers=_NO_CACHE)
 
     @app.get("/api/captures")
     async def list_captures() -> JSONResponse:
@@ -179,6 +186,9 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
 
         try:
             status = await asyncio.to_thread(_run)
+        except SitlCancelled:
+            # A stop() (or a newer open) superseded this start — not an error.
+            return JSONResponse({"ok": False, "cancelled": True})
         except SitlError as exc:
             return JSONResponse({"ok": False, "reason": str(exc)})
         if applog is not None:
@@ -195,6 +205,7 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     async def sitl_status() -> JSONResponse:
         st = sitl.status()
         return JSONResponse({
+            "enabled": config.settings.sitl_enabled,
             "running": st.running, "starting": st.starting,
             "phase": st.phase, "detail": st.detail,
             "sent": st.sent, "total": st.total,
@@ -205,6 +216,21 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     @app.post("/api/sitl/stop")
     async def sitl_stop() -> JSONResponse:
         await asyncio.to_thread(sitl.stop)
+        return JSONResponse({"ok": True})
+
+    @app.post("/api/shutdown")
+    async def shutdown_server() -> JSONResponse:
+        """Stop the whole server cleanly from the web UI. Flips uvicorn's
+        should_exit, which triggers the graceful shutdown (running the lifespan
+        shutdown — ending any SITL session and the WSL distro). The response is
+        returned first; the loop picks up should_exit on its next tick."""
+        server = getattr(app.state, "uvicorn_server", None)
+        if server is None:
+            return JSONResponse(
+                {"ok": False, "reason": "server handle unavailable"}, status_code=503)
+        server.should_exit = True
+        if applog is not None:
+            applog.info("shutdown requested from web UI")
         return JSONResponse({"ok": True})
 
     @app.websocket("/ws")
@@ -218,6 +244,7 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
                 "type": "config",
                 "allow_manual_pilot": config.settings.allow_manual_pilot,
                 "log_list_length": config.settings.log_list_length,
+                "demo": demo,
             }
         )
         await ws.send_json({"type": "log_batch", "entries": applog.recent()})
@@ -349,6 +376,8 @@ def _worker(
         device = port.device
         settle = config.settings.connect_debounce
         debounce = config.settings.disconnect_debounce
+        max_retries = config.settings.capture_max_retries
+        failures = 0
         while not stop_flag.is_set():
             # 1. Connect debounce: the port must stay present for `settle` s.
             hub.emit(
@@ -363,6 +392,7 @@ def _worker(
             # 2. Read.
             hub.emit({"type": "capturing", "port": device})
             ok = _read_once(device)
+            failures = 0 if ok else failures + 1
 
             # 3. Disconnect debounce (and error-retry decision).
             applog.info(f"waiting for {device} to be removed (>= {debounce:g}s)")
@@ -370,7 +400,18 @@ def _worker(
                 device, debounce, ok, should_stop=stop_flag.is_set
             )
             if outcome == "reread":
-                applog.warn(f"{device} still present after error — retrying")
+                # The drone is still plugged in after a failed capture. Retry a
+                # bounded number of times, then give up so a permanently-failing
+                # drone cannot loop forever — the operator unplugs + replugs to
+                # try again (watch() re-fires on_connect on a fresh connect).
+                if failures > max_retries:
+                    msg = (f"{device}: capture failed {failures}× — giving up. "
+                           f"Unplug and replug the drone to retry.")
+                    hub.emit({"type": "error", "message": msg, "port": device})
+                    applog.error(msg)
+                    break
+                applog.warn(f"{device} still present after error — "
+                            f"retry {failures}/{max_retries}")
                 continue
             applog.info(f"{device} removed")
             break
