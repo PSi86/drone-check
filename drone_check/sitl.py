@@ -402,6 +402,9 @@ class SitlRunner:
         # Whether a SITL session was ever started this run. If not, shutdown() is
         # a no-op so it never cold-starts WSL just to pkill nothing.
         self._started_once = False
+        # Memoized "is WSL + the configured distro present" (checked without
+        # booting the VM); gates whether the Configurator feature is offered.
+        self._wsl_ok: bool | None = None
 
     def _progress(self, phase: str, detail: str = "", sent: int = 0,
                   total: int = 0, starting: bool = True,
@@ -542,6 +545,37 @@ class SitlRunner:
             raise SitlError(f"WSL not reachable: {exc}") from exc
         if res.returncode != 0 or "ok" not in (res.stdout or ""):
             raise SitlError(f"WSL distro '{self.s.sitl_distro}' not available")
+
+    def wsl_available(self) -> bool:
+        """Whether WSL is installed and the configured distro exists — checked
+        WITHOUT booting the VM (``wsl -l -q`` only enumerates registered distros).
+
+        Used to decide whether the "view in Configurator" feature can work at all,
+        so the UI hides it on machines without WSL. ``wsl.exe`` missing (not
+        installed) returns False rather than raising."""
+        try:
+            res = subprocess.run(["wsl", "-l", "-q"], capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if res.returncode != 0:
+            return False
+        out = res.stdout or b""
+        # wsl.exe prints UTF-16LE on Windows; fall back to utf-8 elsewhere.
+        text = out.decode("utf-16-le", "ignore")
+        if self.s.sitl_distro not in text:
+            text = out.decode("utf-8", "ignore")
+        names = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return self.s.sitl_distro in names
+
+    def available(self) -> bool:
+        """Whether the Configurator/SITL feature should be offered: enabled in
+        config AND WSL present. The WSL probe is memoized (checked once) so the
+        frequently-polled status endpoint doesn't re-run ``wsl -l -q`` each time."""
+        if not self.s.sitl_enabled:
+            return False
+        if self._wsl_ok is None:
+            self._wsl_ok = self.wsl_available()
+        return self._wsl_ok
 
     def _wsl_running(self) -> bool:
         """Whether our distro is already running. Does NOT start it (``wsl -l

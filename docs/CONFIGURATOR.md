@@ -242,7 +242,7 @@ Under `sitl:` in `config/settings.yaml`:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `enabled` | `true` | Master switch for the feature. |
+| `enabled` | `true` | Master switch for the feature. The **"View in Configurator"** button is shown only when this is on **and** WSL with the configured distro is present (checked once at startup, without booting WSL) — so on a machine without WSL the button is hidden automatically. |
 | `distro` | `Ubuntu` | WSL distro holding the SITL cache. |
 | `cache_dir` | `~/.cache/drone-check/sitl` | WSL path of the pre-built binaries. |
 | `run_dir` | `~/.cache/drone-check/run` | WSL path for per-capture eeprom instances. |

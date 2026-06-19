@@ -163,6 +163,32 @@ def test_install_bundle_fails_on_checksum_mismatch(monkeypatch):
         runner.install_bundle(r"C:\bundle.tar.gz")
 
 
+def test_available_false_when_disabled_in_config(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner.s.sitl_enabled = False
+    probed = []
+    monkeypatch.setattr(runner, "wsl_available", lambda: probed.append(1) or True)
+    assert runner.available() is False
+    assert probed == []  # config off → WSL is never probed
+
+
+def test_available_true_when_enabled_and_wsl_present_and_memoized(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner.s.sitl_enabled = True
+    calls = []
+    monkeypatch.setattr(runner, "wsl_available", lambda: (calls.append(1), True)[1])
+    assert runner.available() is True
+    assert runner.available() is True
+    assert len(calls) == 1  # WSL probe is memoized, not re-run on every poll
+
+
+def test_available_false_when_wsl_missing(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner.s.sitl_enabled = True
+    monkeypatch.setattr(runner, "wsl_available", lambda: False)
+    assert runner.available() is False
+
+
 def test_load_dump_framed_batches_commands_and_saves(monkeypatch):
     sock = FramedFakeSock()
     monkeypatch.setattr(sitl.socket, "create_connection", lambda *a, **k: sock)

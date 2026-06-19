@@ -1,0 +1,172 @@
+<#
+.SYNOPSIS
+    Guided installer for drone-check (Windows).
+
+.DESCRIPTION
+    Sets up drone-check in a local virtual environment and, optionally, the
+    WSL-based "View in Configurator" (SITL) feature. Designed to be run by
+    non-technical users with copy & paste.
+
+    Run it from the repository root, e.g.:
+
+        powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+
+    Without options it asks whether to set up the Configurator/SITL feature.
+    Use the switches below to run unattended.
+
+.PARAMETER Dev
+    Also install development dependencies (pytest).
+
+.PARAMETER Sitl
+    Set up the WSL + SITL "View in Configurator" feature without asking.
+
+.PARAMETER NoSitl
+    Skip the SITL feature without asking (capture & rules still work fully).
+
+.PARAMETER SitlBundle
+    Path to a pre-built SITL bundle (from `drone-check sitl package`) to install,
+    so no toolchain or compiling is needed on this machine.
+
+.PARAMETER Distro
+    WSL distro to use for SITL (default: Ubuntu).
+#>
+[CmdletBinding()]
+param(
+    [switch]$Dev,
+    [switch]$Sitl,
+    [switch]$NoSitl,
+    [string]$SitlBundle = "",
+    [string]$Distro = "Ubuntu"
+)
+
+$ErrorActionPreference = "Stop"
+
+function Info($m)  { Write-Host "==> $m" -ForegroundColor Cyan }
+function Ok($m)    { Write-Host "    $m" -ForegroundColor Green }
+function Warn($m)  { Write-Host "    $m" -ForegroundColor Yellow }
+function Err($m)   { Write-Host "!!  $m" -ForegroundColor Red }
+
+# Work from the repository root (the parent of this script's folder).
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location $RepoRoot
+Info "drone-check installer - repository: $RepoRoot"
+
+# --- 1. Python -------------------------------------------------------------
+function Get-PyVersion($cand) {
+    try {
+        $out = (& $cand --version 2>&1) | Out-String
+        if ($out -match '(\d+)\.(\d+)\.(\d+)') {
+            return [version]("{0}.{1}.{2}" -f $Matches[1], $Matches[2], $Matches[3])
+        }
+    } catch {}
+    return $null
+}
+
+Info "Checking Python (3.10+ required)..."
+$py = $null
+$pyVer = $null
+foreach ($cand in @("python", "py")) {
+    if (-not (Get-Command $cand -ErrorAction SilentlyContinue)) { continue }
+    $ver = Get-PyVersion $cand
+    if ($ver -and $ver -ge [version]"3.10.0") { $py = $cand; $pyVer = $ver; break }
+}
+if (-not $py) {
+    Err "Python 3.10+ not found."
+    Warn "Install it from https://www.python.org/downloads/ (tick 'Add python.exe to PATH'),"
+    Warn "or run:  winget install Python.Python.3.12"
+    Warn "Then re-run this installer."
+    exit 1
+}
+Ok "Found Python $pyVer ($py)"
+
+# --- 2. Virtual environment + package -------------------------------------
+$venvPy = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $venvPy)) {
+    Info "Creating virtual environment (.venv)..."
+    & $py -m venv .venv
+}
+Ok "Virtual environment ready (.venv)"
+
+Info "Installing drone-check and its dependencies (this may take a minute)..."
+& $venvPy -m pip install --upgrade pip --quiet
+$spec = if ($Dev) { ".[dev]" } else { "." }
+& $venvPy -m pip install -e $spec
+Ok "drone-check installed. Run it as:  .\.venv\Scripts\drone-check.exe SUBCOMMAND"
+
+# --- 3. Optional: WSL + SITL ("View in Configurator") ----------------------
+$wantSitl = $false
+if ($Sitl)        { $wantSitl = $true }
+elseif ($NoSitl)  { $wantSitl = $false }
+else {
+    Write-Host ""
+    Write-Host "The 'View in Configurator' feature opens a stored capture in the real" -ForegroundColor White
+    Write-Host "Betaflight Configurator using a SITL instance under WSL (Windows Subsystem" -ForegroundColor White
+    Write-Host "for Linux). Capture and rule-checking work fully WITHOUT it." -ForegroundColor White
+    $ans = Read-Host "Set up the Configurator/SITL feature now? (needs WSL) [y/N]"
+    $wantSitl = ($ans -match '^(y|yes|j|ja)$')
+}
+
+if (-not $wantSitl) {
+    Info "Skipping the SITL feature. It will be hidden in the UI until WSL is set up."
+    Write-Host ""
+    Ok "Done. Start drone-check with:"
+    Ok "    .\.venv\Scripts\drone-check.exe serve"
+    Ok "then open http://127.0.0.1:8000"
+    exit 0
+}
+
+# 3a. WSL present?
+Info "Checking WSL..."
+$wslOk = $false
+$wslExe = Get-Command wsl.exe -ErrorAction SilentlyContinue
+if ($wslExe) {
+    try {
+        # wsl.exe prints UTF-16LE; PowerShell 5.1 captures it with stray NUL bytes
+        # between characters, so strip them before matching the distro name.
+        $distros = ((& wsl.exe -l -q) -join "`n") -replace "`0", ""
+        if ($distros -match [regex]::Escape($Distro)) { $wslOk = $true }
+    } catch {}
+}
+if (-not $wslExe) {
+    Err "WSL is not installed."
+    Warn "Install it (Administrator PowerShell), then REBOOT and re-run this installer:"
+    Warn "    wsl --install -d $Distro"
+    exit 1
+}
+if (-not $wslOk) {
+    Err "WSL is present but the '$Distro' distro is not installed."
+    Warn "Install it, then re-run this installer:"
+    Warn "    wsl --install -d $Distro"
+    Warn "(On first launch the distro asks you to create a Linux username/password.)"
+    exit 1
+}
+Ok "WSL with '$Distro' is available."
+
+# 3b. SITL binaries: prefer installing a pre-built bundle (no toolchain needed).
+if (-not $SitlBundle) {
+    $found = Get-ChildItem -Path $RepoRoot -Filter "sitl-bundle*.tar.gz" -ErrorAction SilentlyContinue |
+             Select-Object -First 1
+    if ($found) { $SitlBundle = $found.FullName }
+}
+
+if ($SitlBundle -and (Test-Path $SitlBundle)) {
+    Info "Installing pre-built SITL binaries from $SitlBundle ..."
+    & $venvPy -m drone_check sitl install "$SitlBundle"
+    Ok "SITL binaries installed."
+} else {
+    Warn "No pre-built SITL bundle found."
+    Warn "Either obtain a bundle and install it:"
+    Warn "    .\.venv\Scripts\drone-check.exe sitl install <path-to-sitl-bundle.tar.gz>"
+    Warn "or build the binaries from source inside WSL (needs a toolchain):"
+    Warn "    wsl -d $Distro -- sudo apt-get update; sudo apt-get install -y build-essential ruby git"
+    Warn "    wsl -d $Distro -- bash scripts/build_sitl.sh 4.4.0 2025.12.2   (run from the repo)"
+    Warn "See docs/CONFIGURATOR.md for details. Until then, 'View in Configurator' stays hidden."
+}
+
+Write-Host ""
+Info "Cached SITL versions:"
+& $venvPy -m drone_check sitl list
+Write-Host ""
+Ok "Done. Start drone-check with:"
+Ok "    .\.venv\Scripts\drone-check.exe serve"
+Ok "then open http://127.0.0.1:8000"
