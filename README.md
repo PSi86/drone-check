@@ -49,34 +49,44 @@ Configurator** via a version-matched SITL instance — see
   group to access `/dev/ttyACM*`.
 - Close **Betaflight / INAV Configurator** before running — it holds the serial
   port open.
-- **WSL is optional** — needed only for the "View in Configurator" feature
-  (below). Capturing and rule-checking work fully without it, and the button is
-  hidden when WSL is not present.
+- **WSL is needed only on Windows** for the "View in Configurator" feature
+  (below). On **Linux** the SITL binaries run **natively** (no WSL). Capturing
+  and rule-checking work fully without any of this, and the button is hidden when
+  no SITL environment is available.
 
 ## Install
 
-### Easy install (Windows, recommended)
+### Easy install (recommended)
 
-From the repository root, run the guided installer — it sets up everything and
-**asks** whether you also want the WSL-based "View in Configurator" feature:
+From the repository root, run the guided installer for your OS — it checks
+Python, creates the `.venv`, installs drone-check, and **asks** whether you also
+want the "View in Configurator" (SITL) feature, installing the pre-built binaries
+from a bundle if you opt in.
 
 ```powershell
+# Windows (sets up WSL-based SITL if you opt in)
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
-It checks Python, creates the `.venv`, installs drone-check, and (if you opt in)
-verifies WSL and installs the pre-built SITL binaries from a bundle. Unattended
-variants:
+```bash
+# Linux / macOS (SITL runs natively on Linux; not available on macOS)
+bash scripts/install.sh
+```
+
+Unattended variants (same idea on both):
 
 ```powershell
-# capture/rules only, no Configurator feature:
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -NoSitl
-# with the Configurator feature, installing a binaries bundle you were given:
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Sitl -SitlBundle C:\path\sitl-bundle.tar.gz
 ```
 
-Start it afterwards with `.\.venv\Scripts\drone-check.exe serve` and open
-<http://127.0.0.1:8000>.
+```bash
+bash scripts/install.sh --no-sitl
+bash scripts/install.sh --sitl --sitl-bundle /path/sitl-bundle.tar.gz
+```
+
+Start it afterwards with `drone-check serve` (or `.\.venv\Scripts\drone-check.exe
+serve` / `./.venv/bin/drone-check serve`) and open <http://127.0.0.1:8000>.
 
 ### Manual install
 
