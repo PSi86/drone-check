@@ -49,9 +49,10 @@ Configurator** via a version-matched SITL instance — see
   group to access `/dev/ttyACM*`.
 - Close **Betaflight / INAV Configurator** before running — it holds the serial
   port open.
-- **WSL is optional** — needed only for the "View in Configurator" feature
-  (below). Capturing and rule-checking work fully without it, and the button is
-  hidden when WSL is not present.
+- **WSL is needed only on Windows** for the "View in Configurator" feature
+  (below). On **Linux** the SITL binaries run **natively** (no WSL). Capturing
+  and rule-checking work fully without any of this, and the button is hidden when
+  no SITL environment is available.
 
 ## Install
 

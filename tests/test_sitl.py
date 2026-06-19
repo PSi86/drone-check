@@ -163,6 +163,49 @@ def test_install_bundle_fails_on_checksum_mismatch(monkeypatch):
         runner.install_bundle(r"C:\bundle.tar.gz")
 
 
+def test_wsl_runs_native_bash_on_linux(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner._use_wsl = False
+    captured = {}
+    monkeypatch.setattr(sitl.subprocess, "run",
+                        lambda cmd, **k: (captured.update(cmd=cmd), _Completed())[1])
+    runner._wsl("echo hi", capture=True)
+    assert captured["cmd"] == ["bash", "-lc", "echo hi"]  # no wsl wrapper
+
+
+def test_wsl_runs_via_wsl_on_windows(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner._use_wsl = True
+    captured = {}
+    monkeypatch.setattr(sitl.subprocess, "run",
+                        lambda cmd, **k: (captured.update(cmd=cmd), _Completed())[1])
+    runner._wsl("echo hi", capture=True)
+    assert captured["cmd"][:3] == ["wsl", "-d", runner.s.sitl_distro]
+    assert captured["cmd"][-3:] == ["bash", "-lc", "echo hi"]
+
+
+def test_wsl_available_native_per_platform(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner._use_wsl = False
+    monkeypatch.setattr(sitl.sys, "platform", "linux")
+    assert runner.wsl_available() is True   # SITL runs natively on Linux
+    monkeypatch.setattr(sitl.sys, "platform", "darwin")
+    assert runner.wsl_available() is False  # Linux ELFs can't run on macOS
+
+
+def test_winpath_to_wsl_identity_on_linux():
+    runner = sitl.SitlRunner(Settings())
+    runner._use_wsl = False
+    assert runner._winpath_to_wsl("/home/u/sitl-bundle.tar.gz") == "/home/u/sitl-bundle.tar.gz"
+
+
+def test_note_wsl_ownership_noop_on_linux():
+    runner = sitl.SitlRunner(Settings())
+    runner._use_wsl = False
+    runner._note_wsl_ownership()
+    assert runner._we_started_wsl is False  # no WSL VM to own on Linux
+
+
 def test_available_false_when_disabled_in_config(monkeypatch):
     runner = sitl.SitlRunner(Settings())
     runner.s.sitl_enabled = False

@@ -42,11 +42,14 @@ it so the Betaflight web Configurator can connect.
 
 ## One-time setup
 
-SITL binaries are **built from the firmware source per version** and run under
-**WSL** (the SITL binary is a Linux host process, not a Windows `.exe`).
-drone-check itself never builds — it only selects a pre-built binary from a
-cache. This is the agreed approach; see
+SITL binaries are **built from the firmware source per version** (the SITL binary
+is a Linux host process, not a Windows `.exe`). drone-check itself never builds —
+it only selects a pre-built binary from a cache. This is the agreed approach; see
 [the SITL background](#why-sitl-via-wsl) below.
+
+**Platform:** on **Windows** the Linux binaries run under **WSL**; on **Linux**
+they run **natively** (no WSL — `sitl.distro` is ignored). The steps below cover
+the Windows/WSL setup; on Linux you just build (or install a bundle) and run.
 
 1. Install WSL with a distro (default: `Ubuntu`).
 2. Install the build toolchain **once**, inside WSL:
@@ -242,8 +245,8 @@ Under `sitl:` in `config/settings.yaml`:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `enabled` | `true` | Master switch for the feature. The **"View in Configurator"** button is shown only when this is on **and** WSL with the configured distro is present (checked once at startup, without booting WSL) — so on a machine without WSL the button is hidden automatically. |
-| `distro` | `Ubuntu` | WSL distro holding the SITL cache. |
+| `enabled` | `true` | Master switch for the feature. The **"View in Configurator"** button is shown only when this is on **and** a SITL environment is present — WSL with the configured distro on Windows (checked once at startup, without booting WSL), or natively on Linux. So on a machine without it the button is hidden automatically. |
+| `distro` | `Ubuntu` | WSL distro holding the SITL cache (Windows only; ignored on Linux, where SITL runs natively). |
 | `cache_dir` | `~/.cache/drone-check/sitl` | WSL path of the pre-built binaries. |
 | `run_dir` | `~/.cache/drone-check/run` | WSL path for per-capture eeprom instances. |
 | `tcp_port` | `5761` | SITL UART1 (CLI/MSP). |

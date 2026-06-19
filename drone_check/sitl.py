@@ -402,9 +402,12 @@ class SitlRunner:
         # Whether a SITL session was ever started this run. If not, shutdown() is
         # a no-op so it never cold-starts WSL just to pkill nothing.
         self._started_once = False
-        # Memoized "is WSL + the configured distro present" (checked without
-        # booting the VM); gates whether the Configurator feature is offered.
+        # Memoized "is the SITL Linux environment present" (see available());
+        # gates whether the Configurator feature is offered.
         self._wsl_ok: bool | None = None
+        # On Windows the SITL Linux binaries run under WSL; on Linux they run
+        # natively (no WSL). macOS can't run the Linux ELFs at all.
+        self._use_wsl = sys.platform == "win32"
 
     def _progress(self, phase: str, detail: str = "", sent: int = 0,
                   total: int = 0, starting: bool = True,
@@ -426,7 +429,13 @@ class SitlRunner:
     # -- helpers ----------------------------------------------------------
 
     def _wsl(self, script: str, *, capture: bool = False, timeout: float | None = None):
-        cmd = ["wsl", "-d", self.s.sitl_distro, "--", "bash", "-lc", script]
+        # Run a bash script in the Linux environment that hosts SITL: under WSL on
+        # Windows (`wsl -d <distro> -- bash -lc`), or the local shell directly on
+        # Linux. (The method name is historical; it dispatches per platform.)
+        if self._use_wsl:
+            cmd = ["wsl", "-d", self.s.sitl_distro, "--", "bash", "-lc", script]
+        else:
+            cmd = ["bash", "-lc", script]
         if capture:
             return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         # Detach stdin (an inherited console stdin is unusable under the web
@@ -468,7 +477,11 @@ class SitlRunner:
     # -- distribution (list / package / install pre-built binaries) --------
 
     def _winpath_to_wsl(self, win_path: str) -> str:
-        """Map a Windows path to its WSL path (works for not-yet-existing files)."""
+        """Map a host path into the SITL Linux environment. On Linux the path is
+        already native and returned unchanged; on Windows it is converted to its
+        WSL path (works for not-yet-existing files)."""
+        if not self._use_wsl:
+            return win_path
         res = self._wsl_b64(f"wslpath -a {shlex.quote(win_path)}", capture=True, timeout=20)
         out = (res.stdout or "").strip()
         if res.returncode != 0 or not out:
@@ -537,22 +550,28 @@ class SitlRunner:
         return versions
 
     def _check_wsl(self) -> None:
+        env = "WSL" if self._use_wsl else "the Linux shell"
         try:
             res = self._wsl("echo ok", capture=True, timeout=30)
         except FileNotFoundError as exc:
-            raise SitlError("WSL not found — install WSL to use the Configurator view") from exc
+            raise SitlError(f"{env} not found — cannot run SITL") from exc
         except (OSError, subprocess.SubprocessError) as exc:
-            raise SitlError(f"WSL not reachable: {exc}") from exc
+            raise SitlError(f"{env} not reachable: {exc}") from exc
         if res.returncode != 0 or "ok" not in (res.stdout or ""):
-            raise SitlError(f"WSL distro '{self.s.sitl_distro}' not available")
+            target = f"WSL distro '{self.s.sitl_distro}'" if self._use_wsl else "the Linux shell"
+            raise SitlError(f"{target} not available")
 
     def wsl_available(self) -> bool:
-        """Whether WSL is installed and the configured distro exists — checked
-        WITHOUT booting the VM (``wsl -l -q`` only enumerates registered distros).
+        """Whether the SITL Linux environment is present (used to decide whether
+        to offer the "view in Configurator" feature, so the UI hides it otherwise).
 
-        Used to decide whether the "view in Configurator" feature can work at all,
-        so the UI hides it on machines without WSL. ``wsl.exe`` missing (not
-        installed) returns False rather than raising."""
+        * Windows: WSL is installed and the configured distro exists — checked
+          WITHOUT booting the VM (``wsl -l -q`` only enumerates registered
+          distros). ``wsl.exe`` missing returns False rather than raising.
+        * Linux: the binaries run natively, so the environment is always present.
+        * Other (e.g. macOS): False — the binaries are Linux ELFs."""
+        if not self._use_wsl:
+            return sys.platform.startswith("linux")
         try:
             res = subprocess.run(["wsl", "-l", "-q"], capture_output=True, timeout=15)
         except (OSError, subprocess.SubprocessError):
@@ -569,8 +588,9 @@ class SitlRunner:
 
     def available(self) -> bool:
         """Whether the Configurator/SITL feature should be offered: enabled in
-        config AND WSL present. The WSL probe is memoized (checked once) so the
-        frequently-polled status endpoint doesn't re-run ``wsl -l -q`` each time."""
+        config AND the Linux environment present. The environment probe is
+        memoized (checked once) so the frequently-polled status endpoint doesn't
+        re-run it each time."""
         if not self.s.sitl_enabled:
             return False
         if self._wsl_ok is None:
@@ -596,11 +616,12 @@ class SitlRunner:
     def _note_wsl_ownership(self) -> None:
         """On the first SITL start of this run, remember whether WSL was already
         running. If not, drone-check is bringing it up and must also tear it down
-        on shutdown (see shutdown())."""
+        on shutdown (see shutdown()). No-op when not using WSL (native Linux has
+        no VM to own)."""
         if self._wsl_ownership_checked:
             return
         self._wsl_ownership_checked = True
-        self._we_started_wsl = not self._wsl_running()
+        self._we_started_wsl = self._use_wsl and not self._wsl_running()
 
     def _wait_port_free(self, host: str, port: int,
                         attempts: int = 40, delay: float = 0.15) -> bool:
