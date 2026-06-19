@@ -31,6 +31,8 @@ drone-check's own dump analysis remains the authoritative source for VTX power.
 
 from __future__ import annotations
 
+import base64
+import shlex
 import socket
 import subprocess
 import sys
@@ -400,6 +402,9 @@ class SitlRunner:
         # Whether a SITL session was ever started this run. If not, shutdown() is
         # a no-op so it never cold-starts WSL just to pkill nothing.
         self._started_once = False
+        # Memoized "is WSL + the configured distro present" (checked without
+        # booting the VM); gates whether the Configurator feature is offered.
+        self._wsl_ok: bool | None = None
 
     def _progress(self, phase: str, detail: str = "", sent: int = 0,
                   total: int = 0, starting: bool = True,
@@ -431,6 +436,14 @@ class SitlRunner:
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 creationflags=_NEW_PROCESS_GROUP)
 
+    def _wsl_b64(self, script: str, *, capture: bool = False, timeout: float | None = None):
+        """Run a bash script in WSL, passed base64-encoded so its quoting, globs
+        and ``$(...)`` survive the Windows → wsl.exe → bash command-line round-trip
+        intact (the raw arg form mangles embedded quotes). Use for any non-trivial
+        script."""
+        b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        return self._wsl(f"echo {b64} | base64 -d | bash", capture=capture, timeout=timeout)
+
     def _binary_path(self, version: str) -> str:
         # WSL path; ~ expands inside `bash -lc`.
         return f"{self.s.sitl_cache_dir}/{version}/betaflight_SITL.elf"
@@ -452,6 +465,77 @@ class SitlRunner:
             return False
         return res.returncode == 0 and "yes" in (res.stdout or "")
 
+    # -- distribution (list / package / install pre-built binaries) --------
+
+    def _winpath_to_wsl(self, win_path: str) -> str:
+        """Map a Windows path to its WSL path (works for not-yet-existing files)."""
+        res = self._wsl_b64(f"wslpath -a {shlex.quote(win_path)}", capture=True, timeout=20)
+        out = (res.stdout or "").strip()
+        if res.returncode != 0 or not out:
+            raise SitlError(f"could not map Windows path into WSL: {win_path}")
+        return out
+
+    def list_cache(self) -> list[dict]:
+        """The SITL versions present in the WSL cache: ``[{version, bytes, static}]``."""
+        self._check_wsl()
+        cache = self.s.sitl_cache_dir
+        script = (
+            f'for d in {cache}/*/; do e="$d/betaflight_SITL.elf"; [ -f "$e" ] || continue; '
+            f'if file "$e" | grep -q "statically linked"; then s=static; else s=dynamic; fi; '
+            f'printf "%s\\t%s\\t%s\\n" "$(basename "$d")" "$(stat -c%s "$e")" "$s"; done'
+        )
+        res = self._wsl_b64(script, capture=True, timeout=30)
+        items: list[dict] = []
+        for line in (res.stdout or "").splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) == 3:
+                items.append({"version": parts[0], "bytes": int(parts[1]),
+                              "static": parts[2] == "static"})
+        return items
+
+    def package_cache(self, out_win_path: str, versions: list[str]) -> str:
+        """Bundle cached binaries (all, or the given versions) into a portable
+        archive at the Windows path ``out_win_path``. Returns the script output."""
+        self._check_wsl()
+        script_path = Path(__file__).resolve().parent.parent / "scripts" / "package_sitl.sh"
+        if not script_path.is_file():
+            raise SitlError(f"package script not found: {script_path}")
+        wsl_script = self._winpath_to_wsl(str(script_path))
+        wsl_out = self._winpath_to_wsl(out_win_path)
+        args = " ".join(shlex.quote(v) for v in versions)
+        res = self._wsl_b64(f"bash {shlex.quote(wsl_script)} {shlex.quote(wsl_out)} {args}",
+                            capture=True, timeout=300)
+        if res.returncode != 0:
+            raise SitlError(f"packaging failed: {(res.stderr or res.stdout or '').strip()}")
+        return (res.stdout or "").strip()
+
+    def install_bundle(self, bundle_win_path: str) -> list[str]:
+        """Install a bundle (created by ``package_cache``) into the WSL cache,
+        verifying checksums. Returns the versions the bundle contained."""
+        self._check_wsl()
+        wsl_bundle = self._winpath_to_wsl(bundle_win_path)
+        listing = self._wsl_b64(f"tar -tzf {shlex.quote(wsl_bundle)}", capture=True, timeout=60)
+        if listing.returncode != 0:
+            raise SitlError(f"cannot read bundle {bundle_win_path}: "
+                            f"{(listing.stderr or '').strip()}")
+        versions = sorted({
+            ln.split("/")[1] for ln in (listing.stdout or "").splitlines()
+            if ln.strip().endswith("betaflight_SITL.elf") and "/" in ln.strip().strip("./")
+        })
+        if not versions:
+            raise SitlError(f"{bundle_win_path} is not a SITL bundle (no binaries inside)")
+        cache = self.s.sitl_cache_dir
+        # Extract into the cache, verify checksums, then drop the manifest files.
+        script = (
+            f"set -e; mkdir -p {cache}; tar -xzf {shlex.quote(wsl_bundle)} -C {cache}; "
+            f"cd {cache}; sha256sum -c SHA256SUMS 1>&2; rm -f SHA256SUMS bundle-info.txt"
+        )
+        res = self._wsl_b64(script, capture=True, timeout=180)
+        if res.returncode != 0:
+            raise SitlError(f"install failed (checksum or extract): "
+                            f"{(res.stderr or res.stdout or '').strip()}")
+        return versions
+
     def _check_wsl(self) -> None:
         try:
             res = self._wsl("echo ok", capture=True, timeout=30)
@@ -461,6 +545,37 @@ class SitlRunner:
             raise SitlError(f"WSL not reachable: {exc}") from exc
         if res.returncode != 0 or "ok" not in (res.stdout or ""):
             raise SitlError(f"WSL distro '{self.s.sitl_distro}' not available")
+
+    def wsl_available(self) -> bool:
+        """Whether WSL is installed and the configured distro exists — checked
+        WITHOUT booting the VM (``wsl -l -q`` only enumerates registered distros).
+
+        Used to decide whether the "view in Configurator" feature can work at all,
+        so the UI hides it on machines without WSL. ``wsl.exe`` missing (not
+        installed) returns False rather than raising."""
+        try:
+            res = subprocess.run(["wsl", "-l", "-q"], capture_output=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if res.returncode != 0:
+            return False
+        out = res.stdout or b""
+        # wsl.exe prints UTF-16LE on Windows; fall back to utf-8 elsewhere.
+        text = out.decode("utf-16-le", "ignore")
+        if self.s.sitl_distro not in text:
+            text = out.decode("utf-8", "ignore")
+        names = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        return self.s.sitl_distro in names
+
+    def available(self) -> bool:
+        """Whether the Configurator/SITL feature should be offered: enabled in
+        config AND WSL present. The WSL probe is memoized (checked once) so the
+        frequently-polled status endpoint doesn't re-run ``wsl -l -q`` each time."""
+        if not self.s.sitl_enabled:
+            return False
+        if self._wsl_ok is None:
+            self._wsl_ok = self.wsl_available()
+        return self._wsl_ok
 
     def _wsl_running(self) -> bool:
         """Whether our distro is already running. Does NOT start it (``wsl -l

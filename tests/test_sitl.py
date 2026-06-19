@@ -102,6 +102,93 @@ class FramedFakeSock:
         self.closed = True
 
 
+class _Completed:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_list_cache_parses_versions_and_static_flag(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    monkeypatch.setattr(runner, "_check_wsl", lambda: None)
+    monkeypatch.setattr(runner, "_wsl_b64", lambda *a, **k: _Completed(
+        stdout="2025.12.2\t1501816\tstatic\n4.4.0\t388896\tdynamic\n"))
+    items = runner.list_cache()
+    assert items == [
+        {"version": "2025.12.2", "bytes": 1501816, "static": True},
+        {"version": "4.4.0", "bytes": 388896, "static": False},
+    ]
+
+
+def test_install_bundle_rejects_non_bundle(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    monkeypatch.setattr(runner, "_check_wsl", lambda: None)
+    monkeypatch.setattr(runner, "_winpath_to_wsl", lambda p: "/mnt/c/x.tar.gz")
+    # tar listing has no SITL binaries -> not a bundle.
+    monkeypatch.setattr(runner, "_wsl_b64",
+                        lambda *a, **k: _Completed(stdout="./some-other-file\n"))
+    with pytest.raises(sitl.SitlError, match="not a SITL bundle"):
+        runner.install_bundle(r"C:\x.tar.gz")
+
+
+def test_install_bundle_extracts_and_returns_versions(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    monkeypatch.setattr(runner, "_check_wsl", lambda: None)
+    monkeypatch.setattr(runner, "_winpath_to_wsl", lambda p: "/mnt/c/bundle.tar.gz")
+
+    def fake(script, **k):
+        if "tar -tzf" in script:  # bundle listing
+            return _Completed(stdout="./2025.12.2/betaflight_SITL.elf\n"
+                                     "./4.4.0/betaflight_SITL.elf\n"
+                                     "./SHA256SUMS\n")
+        return _Completed(returncode=0)  # extract + checksum verify
+
+    monkeypatch.setattr(runner, "_wsl_b64", fake)
+    assert runner.install_bundle(r"C:\bundle.tar.gz") == ["2025.12.2", "4.4.0"]
+
+
+def test_install_bundle_fails_on_checksum_mismatch(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    monkeypatch.setattr(runner, "_check_wsl", lambda: None)
+    monkeypatch.setattr(runner, "_winpath_to_wsl", lambda p: "/mnt/c/bundle.tar.gz")
+
+    def fake(script, **k):
+        if "tar -tzf" in script:
+            return _Completed(stdout="./4.4.0/betaflight_SITL.elf\n")
+        return _Completed(returncode=1, stderr="betaflight_SITL.elf: FAILED")
+
+    monkeypatch.setattr(runner, "_wsl_b64", fake)
+    with pytest.raises(sitl.SitlError, match="install failed"):
+        runner.install_bundle(r"C:\bundle.tar.gz")
+
+
+def test_available_false_when_disabled_in_config(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner.s.sitl_enabled = False
+    probed = []
+    monkeypatch.setattr(runner, "wsl_available", lambda: probed.append(1) or True)
+    assert runner.available() is False
+    assert probed == []  # config off → WSL is never probed
+
+
+def test_available_true_when_enabled_and_wsl_present_and_memoized(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner.s.sitl_enabled = True
+    calls = []
+    monkeypatch.setattr(runner, "wsl_available", lambda: (calls.append(1), True)[1])
+    assert runner.available() is True
+    assert runner.available() is True
+    assert len(calls) == 1  # WSL probe is memoized, not re-run on every poll
+
+
+def test_available_false_when_wsl_missing(monkeypatch):
+    runner = sitl.SitlRunner(Settings())
+    runner.s.sitl_enabled = True
+    monkeypatch.setattr(runner, "wsl_available", lambda: False)
+    assert runner.available() is False
+
+
 def test_load_dump_framed_batches_commands_and_saves(monkeypatch):
     sock = FramedFakeSock()
     monkeypatch.setattr(sitl.socket, "create_connection", lambda *a, **k: sock)

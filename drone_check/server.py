@@ -205,7 +205,9 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     async def sitl_status() -> JSONResponse:
         st = sitl.status()
         return JSONResponse({
-            "enabled": config.settings.sitl_enabled,
+            # Offer the feature only when enabled in config AND WSL is present;
+            # the logs page hides "Im Configurator" when this is false.
+            "enabled": sitl.available(),
             "running": st.running, "starting": st.starting,
             "phase": st.phase, "detail": st.detail,
             "sent": st.sent, "total": st.total,

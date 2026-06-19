@@ -286,6 +286,61 @@ def _add_serial_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--debug", action="store_true", help="tee raw serial traffic to ./debug/")
 
 
+def _sitl_runner(args: argparse.Namespace):
+    from .sitl import SitlRunner
+
+    return SitlRunner(load_config(args.config).settings)
+
+
+def cmd_sitl_list(args: argparse.Namespace) -> int:
+    """List the SITL binaries cached in WSL (and whether they are portable)."""
+    from .sitl import SitlError
+
+    try:
+        items = _sitl_runner(args).list_cache()
+    except SitlError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not items:
+        print("No SITL binaries cached. Build them with scripts/build_sitl.sh, "
+              "or install a bundle with `drone-check sitl install`.")
+        return 0
+    total = 0
+    for it in sorted(items, key=lambda x: x["version"]):
+        total += it["bytes"]
+        note = "static" if it["static"] else "DYNAMIC (not portable - rebuild)"
+        print(f"  {it['version']:14} {it['bytes']:>8} B  {note}")
+    print(f"{len(items)} version(s), {total} bytes total")
+    return 0
+
+
+def cmd_sitl_package(args: argparse.Namespace) -> int:
+    """Bundle cached SITL binaries into a portable archive for distribution."""
+    from .sitl import SitlError
+
+    try:
+        out = _sitl_runner(args).package_cache(
+            str(Path(args.output).resolve()), args.versions or [])
+    except SitlError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(out)
+    return 0
+
+
+def cmd_sitl_install(args: argparse.Namespace) -> int:
+    """Install a bundle (from `sitl package`) into the WSL SITL cache."""
+    from .sitl import SitlError
+
+    try:
+        versions = _sitl_runner(args).install_bundle(str(Path(args.bundle).resolve()))
+    except SitlError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Installed {len(versions)} SITL binary/-ies: {', '.join(versions)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="drone-check")
     parser.add_argument(
@@ -316,6 +371,25 @@ def main(argv: list[str] | None = None) -> int:
 
     p_demo = sub.add_parser("demo", help="run against built-in sample drones")
     p_demo.set_defaults(func=cmd_demo)
+
+    p_sitl = sub.add_parser(
+        "sitl", help="manage pre-built SITL binaries (list / package / install)")
+    sitl_sub = p_sitl.add_subparsers(dest="sitl_command", required=True)
+
+    p_sl = sitl_sub.add_parser("list", help="list SITL binaries in the WSL cache")
+    p_sl.set_defaults(func=cmd_sitl_list)
+
+    p_sp = sitl_sub.add_parser(
+        "package", help="bundle cached binaries into a portable archive")
+    p_sp.add_argument("output", help="output archive path, e.g. sitl-bundle.tar.gz")
+    p_sp.add_argument("versions", nargs="*",
+                      help="versions to include (default: all cached)")
+    p_sp.set_defaults(func=cmd_sitl_package)
+
+    p_si = sitl_sub.add_parser(
+        "install", help="install a bundle (from `sitl package`) into the WSL cache")
+    p_si.add_argument("bundle", help="bundle archive to install")
+    p_si.set_defaults(func=cmd_sitl_install)
 
     args = parser.parse_args(argv)
     return args.func(args)

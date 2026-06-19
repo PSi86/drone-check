@@ -111,14 +111,22 @@ VTXEOF
 
   # The build validates the ARM toolchain even for the SITL host target (the
   # tool check is unconditional). arm_sdk_install fetches it into the repo's
-  # tools/ dir (no sudo, no PATH change). The rule lives in the top Makefile on
-  # 4.4.x and in mk/tools.mk on 2024.x+, so search both.
-  if grep -rq "arm_sdk_install" Makefile mk 2>/dev/null; then
+  # tools/ dir (no sudo, no PATH change). The rule lives in make/tools.mk on
+  # 4.4.x and in mk/tools.mk on 2024.x+, so search the top Makefile and both
+  # make-include dirs.
+  if grep -rq "arm_sdk_install" Makefile mk make 2>/dev/null; then
     make arm_sdk_install >/dev/null 2>&1 || make arm_sdk_install
   fi
 
-  echo ">> $tag: building SITL"
-  make TARGET=SITL
+  # Build statically (OPTIONS=SITL_STATIC adds -static -static-libgcc, supported
+  # by Betaflight's SITL.mk) so the binary carries its own libc/libm and runs on
+  # ANY Linux/WSL regardless of the host glibc version. Without this the ELF is
+  # pinned to the build host's glibc (e.g. needs >= 2.38 when built on a current
+  # Ubuntu), which breaks running it on an older target distro — exactly what
+  # makes the cached binaries portable enough to distribute. Older firmware whose
+  # SITL.mk lacks the option just ignores it and builds dynamically.
+  echo ">> $tag: building SITL (static)"
+  make TARGET=SITL OPTIONS=SITL_STATIC
 
   if [ ! -f obj/main/betaflight_SITL.elf ]; then
     echo "!! $tag: build produced no betaflight_SITL.elf" >&2

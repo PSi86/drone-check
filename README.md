@@ -49,10 +49,38 @@ Configurator** via a version-matched SITL instance — see
   group to access `/dev/ttyACM*`.
 - Close **Betaflight / INAV Configurator** before running — it holds the serial
   port open.
+- **WSL is optional** — needed only for the "View in Configurator" feature
+  (below). Capturing and rule-checking work fully without it, and the button is
+  hidden when WSL is not present.
 
 ## Install
 
-```bash
+### Easy install (Windows, recommended)
+
+From the repository root, run the guided installer — it sets up everything and
+**asks** whether you also want the WSL-based "View in Configurator" feature:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+It checks Python, creates the `.venv`, installs drone-check, and (if you opt in)
+verifies WSL and installs the pre-built SITL binaries from a bundle. Unattended
+variants:
+
+```powershell
+# capture/rules only, no Configurator feature:
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -NoSitl
+# with the Configurator feature, installing a binaries bundle you were given:
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Sitl -SitlBundle C:\path\sitl-bundle.tar.gz
+```
+
+Start it afterwards with `.\.venv\Scripts\drone-check.exe serve` and open
+<http://127.0.0.1:8000>.
+
+### Manual install
+
+```powershell
 # Windows (PowerShell)
 python -m venv .venv
 .\.venv\Scripts\activate
@@ -68,6 +96,25 @@ pip install -e ".[dev]"
 
 This installs the `drone-check` command. (Equivalently you can always run
 `python -m drone_check <command>`.)
+
+For the **"View in Configurator"** feature you additionally need WSL with a
+distro (one-time, Administrator PowerShell, then reboot):
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Then put the SITL binaries in place — either install a pre-built bundle (no
+toolchain needed):
+
+```powershell
+drone-check sitl install C:\path\to\sitl-bundle.tar.gz
+drone-check sitl list                 # confirm
+```
+
+or build them from source inside WSL (see
+[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)). If WSL is absent the feature is
+simply hidden — nothing else is affected.
 
 ## Run
 
@@ -144,6 +191,14 @@ bash scripts/build_sitl.sh 4.4.0 4.5.4 2025.12.2
 Both old semver tags (e.g. `4.4.0`) and the newer date-based tags (e.g.
 `2025.12.2`) work — the build script adapts to the different source-tree layout
 each firmware generation uses.
+
+The binaries are statically linked, so you only build once and can hand the
+cache to other machines (which then need only WSL, no toolchain):
+
+```powershell
+drone-check sitl package C:\share\sitl-bundle.tar.gz   # bundle the cache
+drone-check sitl install C:\share\sitl-bundle.tar.gz   # on the target machine
+```
 
 Then on `/logs`, click **View in Configurator** and connect the Betaflight web
 Configurator (manual connection) to `ws://127.0.0.1:6761`.
