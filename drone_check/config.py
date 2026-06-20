@@ -84,7 +84,9 @@ class Settings:
     # config to the Configurator over MSP without starting the flight loop. The
     # native backend is built per firmware family (see scripts/build_bfcd.sh).
     # Distinct ports from SITL so both can coexist. See drone_check/bfcd/.
-    bfcd_enabled: bool = False  # off until the native backend exists
+    # Experimental read-only alternative to SITL; gated additionally by the Linux
+    # environment being present (so it auto-hides where it can't run).
+    bfcd_enabled: bool = True
     bfcd_cache_dir: str = "~/.cache/drone-check/bfcd"
     bfcd_run_dir: str = "~/.cache/drone-check/bfcd-run"
     # The bf-configd binary is derived from SITL and inherits SITL's hard-coded

@@ -224,13 +224,16 @@ Betaflight source with a firmware-enforced **read-only guard** — every MSP wri
 is refused, so an inspector can view everything but nothing can be changed or
 persisted. Working for the Betaflight 4.5 family (Linux/WSL).
 
-```powershell
-# inspect what would happen for a dump (no hardware, no backend needed)
-.\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>
+Build the backend once (inside WSL/Linux), then it appears on the `/logs` page
+as a **bf-configd** button next to *Im Configurator* (SITL):
 
-# build the backend once (inside WSL/Linux), then serve a dump
-bash scripts/build_bfcd.sh 4.5.3
-.\.venv\Scripts\python.exe -m drone_check bfcd serve <dump.txt>   # -> ws://127.0.0.1:6762
+```powershell
+bash scripts/build_bfcd.sh 4.5.3          # build the 4.5 backend into the cache
+# then on /logs, click "bf-configd" on a capture -> ws://127.0.0.1:6762
+
+# or from the CLI, no UI:
+.\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>    # selection only
+.\.venv\Scripts\python.exe -m drone_check bfcd serve <dump.txt>   # run + serve
 ```
 
 See **[bf-configd/README.md](bf-configd/README.md)** and **[docs/bfcd/](docs/bfcd/)**.

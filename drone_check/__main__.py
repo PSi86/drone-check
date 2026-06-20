@@ -178,7 +178,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from .server import create_app
 
     config = load_config(args.config)
-    app = create_app(config, demo=args.demo)
+    app = create_app(config, demo=args.demo, config_dir=args.config)
     # Several clean ways to stop, all triggering uvicorn's graceful shutdown (which
     # runs the app lifespan shutdown — ending any SITL session and terminating the
     # WSL distro we started): Ctrl+C, pressing Enter here, or the "Server beenden"
@@ -390,16 +390,12 @@ def cmd_bfcd_serve(args: argparse.Namespace) -> int:
     dump_text = Path(args.dump).read_text(encoding="utf-8", errors="replace")
     session = BfcdSession(config.settings, args.config)
     try:
-        url = session.start(
-            dump_text,
-            progress_cb=lambda sent, total: print(
-                f"\r  loading {sent}/{total} lines...", end="", file=sys.stderr),
-        )
+        status = session.start(dump_text)
     except BfcdError as exc:
         print(f"\nerror: {exc}", file=sys.stderr)
         return 1
     print(f"\nbf-configd ready. Connect the Betaflight Configurator (manual "
-          f"connection) to: {url}")
+          f"connection) to: {status.connect_url}")
     print("Press Enter to stop.")
     try:
         sys.stdin.readline()

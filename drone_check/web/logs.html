@@ -135,7 +135,28 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let CAPTURES = [];
-    let SITL_ENABLED = true;  // gates the "Im Configurator" button; set from /api/sitl/status
+    // Two interchangeable view backends share one footer bar (they use the same
+    // TCP port, so only one runs at a time). Each is gated by its own status.
+    let SITL_ENABLED = true;   // gates "Im Configurator (SITL)"; from /api/sitl/status
+    let BFCD_ENABLED = false;  // gates "bf-configd (read-only)"; from /api/bfcd/status
+    let activeBackend = "sitl";
+    const BACKENDS = {
+      sitl: {
+        label: "SITL",
+        start: (id) => `/api/captures/${encodeURIComponent(id)}/configurator`,
+        status: "/api/sitl/status", stop: "/api/sitl/stop",
+        note: "SITL hat keine echten Motor-Ausgänge: Motor-/Mixer-Tabs zeigen "
+            + "Warnungen (erwartet, ohne Einfluss auf die Inspektion). VTX-Tabelle wird angezeigt.",
+      },
+      bfcd: {
+        label: "bf-configd",
+        start: (id) => `/api/captures/${encodeURIComponent(id)}/bfcd`,
+        status: "/api/bfcd/status", stop: "/api/bfcd/stop",
+        note: "bf-configd ist read-only: jeder Schreibzugriff wird von der Firmware "
+            + "abgelehnt — der Configurator kann alles ansehen, aber nichts ändern. "
+            + "Motor-/Mixer-Tabs zeigen Warnungen (erwartet).",
+      },
+    };
 
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -174,8 +195,11 @@
         : c.firmware_hash_approved === false ? "✗ not approved" : "—";
       const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
       const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
+      const ver = esc((c.firmware || {}).version || "");
       const cfgBtn = (SITL_ENABLED && c.has_dump)
-        ? `<button data-cfg="${esc(c.id)}" data-ver="${esc((c.firmware||{}).version||"")}">Im Configurator</button>` : "";
+        ? `<button data-cfg="${esc(c.id)}" data-ver="${ver}">Im Configurator</button>` : "";
+      const bfcdBtn = (BFCD_ENABLED && c.has_dump)
+        ? `<button data-bfcd="${esc(c.id)}" data-ver="${ver}" title="Read-only-Ansicht (jeder Schreibzugriff wird abgelehnt)">bf-configd</button>` : "";
       return `<tr>
         <td>${verdictBadge(c)}</td>
         <td class="ts">${esc(c.captured_at || c.id)}</td>
@@ -184,7 +208,7 @@
         <td>${esc(fwTxt)}${git}</td>
         <td>${hash}${hashSrc}</td>
         <td><div class="actions">
-          <button data-open="${esc(c.id)}">Ordner öffnen</button>${cfgBtn}
+          <button data-open="${esc(c.id)}">Ordner öffnen</button>${cfgBtn}${bfcdBtn}
         </div></td>
       </tr>`;
     }
@@ -198,7 +222,10 @@
         b.onclick = () => openFolder(b.getAttribute("data-open"), b);
       });
       $("rows").querySelectorAll("button[data-cfg]").forEach((b) => {
-        b.onclick = () => openConfigurator(b.getAttribute("data-cfg"), b.getAttribute("data-ver"), b);
+        b.onclick = () => openViewer(b.getAttribute("data-cfg"), b.getAttribute("data-ver"), b, "sitl");
+      });
+      $("rows").querySelectorAll("button[data-bfcd]").forEach((b) => {
+        b.onclick = () => openViewer(b.getAttribute("data-bfcd"), b.getAttribute("data-ver"), b, "bfcd");
       });
     }
 
@@ -219,32 +246,38 @@
     }
 
     const PHASE_LABELS = {
-      checking: "Prüfe WSL & SITL-Binary…",
-      starting: "Starte SITL (Ladephase)…",
+      checking: "Prüfe Umgebung & Binary…",
+      starting: "Starte (Ladephase)…",
       loading: "Lade Konfiguration",
-      saving: "Speichere & starte SITL neu…",
-      starting2: "Starte SITL aus gespeicherter Konfiguration…",
+      saving: "Speichere & starte neu…",
+      starting2: "Starte aus gespeicherter Konfiguration…",
       proxy: "Starte Configurator-Proxy…",
       ready: "Bereit",
     };
-    let sitlPoll = null;
+    let viewerPoll = null;
 
-    function renderSitl(st) {
+    // One shared footer bar renders whichever backend (SITL or bf-configd) is
+    // active; the label/note come from the BACKENDS config.
+    function renderViewer(st, backend) {
+      backend = backend || activeBackend;
+      const cfg = BACKENDS[backend] || {};
+      const label = cfg.label || "Backend";
       const bar = $("sitlBar"), prog = $("sitlProg"), fill = $("sitlProgFill"), stop = $("sitlStop");
       if (st && st.running) {
         stopPolling();
-        $("sitlTitle").textContent = `SITL läuft — Firmware ${st.version || "?"}`
+        $("sitlTitle").textContent = `${label} läuft — Firmware ${st.version || "?"}`
           + (st.capture_id ? `  ·  ${st.capture_id}` : "");
         $("sitlUrl").textContent = st.connect_url || "";
+        $("sitlNote").textContent = cfg.note || "";
         $("sitlConnect").classList.remove("hidden");
         $("sitlOpen").classList.remove("hidden");
         $("sitlNote").classList.remove("hidden");
         prog.classList.add("hidden");
-        stop.textContent = "SITL stoppen"; stop.disabled = false;
+        stop.textContent = `${label} stoppen`; stop.disabled = false;
         bar.classList.remove("hidden");
       } else if (st && st.stopping) {
-        // Local-only transient while we wait for /api/sitl/stop to return.
-        $("sitlTitle").textContent = "Stoppe SITL…";
+        // Local-only transient while we wait for the stop request to return.
+        $("sitlTitle").textContent = `Stoppe ${label}…`;
         $("sitlConnect").classList.add("hidden");
         $("sitlOpen").classList.add("hidden");
         $("sitlNote").classList.add("hidden");
@@ -252,10 +285,10 @@
         stop.textContent = "Stoppe…"; stop.disabled = true;
         bar.classList.remove("hidden");
       } else if (st && st.starting) {
-        let label = PHASE_LABELS[st.phase] || "Starte SITL…";
-        if (st.phase === "loading" && st.total) label += ` ${st.sent}/${st.total}`;
-        // Name the capture so it is clear what "Abbrechen" would cancel.
-        $("sitlTitle").textContent = (st.capture_id ? `${st.capture_id} — ` : "") + label;
+        let lbl = PHASE_LABELS[st.phase] || `Starte ${label}…`;
+        if (st.phase === "loading" && st.total) lbl += ` ${st.sent}/${st.total}`;
+        // Name the backend + capture so it is clear what "Abbrechen" would cancel.
+        $("sitlTitle").textContent = `${label}` + (st.capture_id ? ` · ${st.capture_id}` : "") + " — " + lbl;
         $("sitlConnect").classList.add("hidden");
         $("sitlOpen").classList.add("hidden");
         $("sitlNote").classList.add("hidden");
@@ -274,80 +307,93 @@
       }
     }
 
-    function startPolling() {
-      if (sitlPoll) return;
-      sitlPoll = setInterval(async () => {
+    function startPolling(backend) {
+      if (viewerPoll) return;
+      const url = (BACKENDS[backend] || BACKENDS[activeBackend]).status;
+      viewerPoll = setInterval(async () => {
         try {
-          const st = await (await fetch("/api/sitl/status")).json();
-          if (st.running || st.starting) renderSitl(st);
+          const st = await (await fetch(url)).json();
+          if (st.running || st.starting) renderViewer(st, backend);
         } catch (e) {}
       }, 400);
     }
-    function stopPolling() { if (sitlPoll) { clearInterval(sitlPoll); sitlPoll = null; } }
+    function stopPolling() { if (viewerPoll) { clearInterval(viewerPoll); viewerPoll = null; } }
 
     // Epoch guard: a stop() (or a new open) bumps this so a slow, now-obsolete
     // start response can't re-show the bar after the user already stopped.
-    let sitlEpoch = 0;
+    let viewerEpoch = 0;
 
-    async function openConfigurator(id, ver, btn) {
+    async function openViewer(id, ver, btn, backend) {
+      const cfg = BACKENDS[backend];
+      if (!cfg) return;
+      // SITL and bf-configd share a TCP port, so stop the other one first.
+      const other = backend === "sitl" ? "bfcd" : "sitl";
+      try { await fetch(BACKENDS[other].stop, { method: "POST" }); } catch (e) {}
+      activeBackend = backend;
       const prev = btn.textContent;
-      const epoch = ++sitlEpoch;
-      btn.disabled = true; btn.textContent = "Starte SITL…";
-      renderSitl({ starting: true, phase: "checking" });
-      startPolling();
+      const epoch = ++viewerEpoch;
+      btn.disabled = true; btn.textContent = `Starte ${cfg.label}…`;
+      renderViewer({ starting: true, phase: "checking", capture_id: id }, backend);
+      startPolling(backend);
       try {
-        const r = await fetch(`/api/captures/${encodeURIComponent(id)}/configurator`, { method: "POST" });
+        const r = await fetch(cfg.start(id), { method: "POST" });
         const d = await r.json().catch(() => ({}));
-        if (epoch !== sitlEpoch) return;  // superseded by a stop / newer open
+        if (epoch !== viewerEpoch) return;  // superseded by a stop / newer open
         stopPolling();
         if (d.ok) {
-          renderSitl({ running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url });
+          renderViewer({ running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url }, backend);
         } else if (d.cancelled) {
-          renderSitl({ running: false });  // we asked it to stop — no error
+          renderViewer({ running: false }, backend);  // we asked it to stop — no error
         } else {
-          renderSitl({ running: false });
-          alert("SITL konnte nicht gestartet werden:\n" + (d.reason || r.status));
+          renderViewer({ running: false }, backend);
+          const tip = backend === "bfcd"
+            ? "\n\nTipp: „Im Configurator“ (SITL) funktioniert auch für Dumps, die bf-configd (noch) nicht unterstützt." : "";
+          alert(`${cfg.label} konnte nicht gestartet werden:\n` + (d.reason || r.status) + tip);
         }
       } catch (e) {
-        if (epoch !== sitlEpoch) return;
-        stopPolling(); renderSitl({ running: false });
-        alert("Fehler beim Starten von SITL: " + e);
+        if (epoch !== viewerEpoch) return;
+        stopPolling(); renderViewer({ running: false }, backend);
+        alert(`Fehler beim Starten von ${cfg.label}: ` + e);
       } finally {
         btn.disabled = false; btn.textContent = prev;
       }
     }
 
-    async function stopSitl() {
-      sitlEpoch++;  // invalidate any in-flight open response
+    async function stopViewer() {
+      viewerEpoch++;  // invalidate any in-flight open response
       stopPolling();
-      renderSitl({ stopping: true });
-      try { await fetch("/api/sitl/stop", { method: "POST" }); } catch (e) {}
+      renderViewer({ stopping: true }, activeBackend);
+      const cfg = BACKENDS[activeBackend];
+      try { await fetch(cfg.stop, { method: "POST" }); } catch (e) {}
       // Reflect the real post-stop state rather than assuming, so the bar can
       // never get wedged on "Stoppe…" if anything unexpected happened.
       try {
-        const st = await (await fetch("/api/sitl/status")).json();
-        renderSitl(st);
-      } catch (e) { renderSitl({ running: false }); }
+        const st = await (await fetch(cfg.status)).json();
+        renderViewer(st, activeBackend);
+      } catch (e) { renderViewer({ running: false }, activeBackend); }
     }
-    $("sitlStop").onclick = stopSitl;
+    $("sitlStop").onclick = stopViewer;
 
     async function load() {
       const r = await fetch("/api/captures");
       const data = await r.json().catch(() => ({ captures: [] }));
       CAPTURES = data.captures || [];
-      // Learn whether the Configurator/SITL feature is enabled (and reflect any
-      // already-running session) BEFORE rendering, so the button is only shown
-      // when the feature is on.
-      try {
-        const st = await (await fetch("/api/sitl/status")).json();
-        SITL_ENABLED = st.enabled !== false;
-        fillVariants();
-        render();
-        renderSitl(st);
-        if (st.starting) startPolling();
-      } catch (e) {
-        fillVariants();
-        render();
+      // Learn which view backends are enabled (and reflect any already-running
+      // session) BEFORE rendering, so each button is only shown when its feature
+      // is on. Both backends are probed; whichever is active drives the bar.
+      let sitlSt = null, bfcdSt = null;
+      try { sitlSt = await (await fetch("/api/sitl/status")).json(); } catch (e) {}
+      try { bfcdSt = await (await fetch("/api/bfcd/status")).json(); } catch (e) {}
+      SITL_ENABLED = !sitlSt || sitlSt.enabled !== false;
+      BFCD_ENABLED = !!(bfcdSt && bfcdSt.enabled);
+      fillVariants();
+      render();
+      if (bfcdSt && (bfcdSt.running || bfcdSt.starting)) {
+        activeBackend = "bfcd"; renderViewer(bfcdSt, "bfcd");
+        if (bfcdSt.starting) startPolling("bfcd");
+      } else if (sitlSt) {
+        activeBackend = "sitl"; renderViewer(sitlSt, "sitl");
+        if (sitlSt.starting) startPolling("sitl");
       }
     }
 

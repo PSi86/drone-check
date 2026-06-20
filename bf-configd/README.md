@@ -47,7 +47,10 @@ Implemented and tested (Python side):
 - `drone_check/bfcd/goldens.py` + `config/bfcd_msp_masks.yaml` — compare MSP
   responses against SITL, masking dynamic fields. *(BFCD-009)*
 - `drone_check/bfcd/session.py` — the integration seam: detect → select →
-  resolve binary → load and serve over MSP. *(BFCD-012)*
+  resolve binary → load and serve over MSP, with a pollable status. *(BFCD-012)*
+- Web UI: the `/logs` page offers a **bf-configd** button next to *Im
+  Configurator* (SITL) on each capture; both drive a shared status bar and the
+  bf-configd error suggests SITL as a fallback. *(BFCD-012)*
 - CLI: `drone-check bfcd plan <dump.txt>` (selection only) and
   `drone-check bfcd serve <dump.txt>` (run the backend).
 
@@ -56,7 +59,6 @@ Not implemented yet (next iterations):
 - Flight-loop trimming — CONFIGD currently keeps SITL's runtime; the read-only
   guard is enforced, but the realtime tasks still run. *(BFCD-003/007)*
 - OSD tab — SITL `#undef`s `USE_OSD`; re-enabling it is deferred. *(parity with SITL)*
-- Web-UI backend toggle (SITL ↔ bf-configd) and fallback. *(BFCD-012 full)*
 - Other families (4.4, 4.3, 2025.12) and golden tests vs SITL. *(BFCD-009)*
 
 ## Build
