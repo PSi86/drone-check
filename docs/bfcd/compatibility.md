@@ -15,6 +15,14 @@ The matrix lives in `config/bfcd_matrix.yaml` and is consumed by
 | Betaflight 4.3.x | `bf-configd-4.3` | 10.10.x / 2025.12.x | phase 2 |
 | Betaflight 2025.12.x | `bf-configd-2025.12` | 2025.12.x | phase 3 |
 
+Build/verify status: **4.5, 4.4 and 2025.12 build and serve cleanly** via
+`scripts/build_bfcd.sh` (the scripted derivation's anchors match both the classic
+4.4/4.5 layout and the 2025.x platform-refactor layout). Each was verified
+end-to-end against a real capture — reads answered, the craft name from the dump
+served, and MSP writes refused. 4.3 is not yet verified. (The `status` column
+above is the roadmap phase, independent of which binaries are built locally;
+whether a backend binary exists is checked at runtime per firmware family.)
+
 ## Family derivation
 
 The build axis is the **firmware family**: the first two dot-separated

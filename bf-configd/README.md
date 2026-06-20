@@ -69,12 +69,15 @@ Not implemented yet (next iterations):
 ## Build
 
 ```bash
-bash scripts/build_bfcd.sh 4.5.3      # clone official tag, derive, build, cache
+bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2   # one or more git tags
 ```
 
 Automated from official Betaflight source (see `scripts/build_bfcd.sh`): it
-clones the tag, applies the in-place derivation (read-only guard + VTX table +
-faster CLI poll) and builds a static binary into the cache. Then serve a dump:
+clones the tag, applies the in-place derivation (read-only guard + flight-loop
+trim + VTX table + faster CLI poll) and builds a static binary into the cache.
+The same scripted anchors apply to both the classic 4.4/4.5 layout and the
+2025.x platform-refactor layout; 4.5, 4.4 and 2025.12 are verified working. Then
+serve a dump:
 
 ```bash
 drone-check bfcd serve quad_dump.txt  # -> ws://127.0.0.1:6762 for the Configurator
