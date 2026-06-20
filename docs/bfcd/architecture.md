@@ -45,13 +45,18 @@ built with a small read-only guard. Implemented for the 4.5 family:
   answered normally; the Configurator cannot change or persist anything. This is
   the one behavioural difference from SITL and the anti-cheat-relevant guarantee.
 - The VTX config table is re-enabled (config data only) so `vtxtable` is visible.
+- **Flight-loop trimming**: the gyro/filter/PID, accel/attitude and RX tasks are
+  gated off, so the scheduler never enters gyro-locked mode (it falls back to
+  time-based scheduling, keeping the serial/CLI/MSP task running) and the host
+  loop idles at 1 kHz instead of busy-spinning at 20 kHz. ~0.5 % CPU vs ~4.5 %
+  for full SITL — ~9× lighter (plan §7.1/8).
 - Serving is two-phase like SITL (load the dump over the CLI, `save`+reboot, then
   serve from the populated config) via `drone_check/bfcd/session.py`, bridged to
   an MSP WebSocket (`ws://127.0.0.1:6762`) with websockify (plan §9).
+- The web UI offers it next to SITL on `/logs` (plan §BFCD-012).
 
-Deferred (next iterations): flight-loop trimming (CONFIGD still runs SITL's
-runtime; the read-only guard is what makes it safe — plan §7.1/8), re-enabling
-the OSD stack (SITL `#undef`s it), runtime stubs beyond SITL's, and golden tests
+Deferred (next iterations): re-enabling the OSD stack (SITL `#undef`s it),
+runtime stubs beyond SITL's, other families (4.4/4.3/2025.12) and golden tests
 vs SITL (BFCD-009).
 
 ## Relationship to SITL

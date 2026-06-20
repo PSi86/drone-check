@@ -12,6 +12,9 @@ version-tolerant. The scripted edits for the 4.5 family are:
   `vtxtable` power values/labels are visible.
 - **faster CLI poll** — `dyad_setUpdateTimeout` lowered so loading a dump over
   the CLI is fast.
+- **flight-loop trim** — the gyro/filter/PID, accel/attitude and RX tasks are
+  gated off in `fc/tasks.c` and the host loop idles slowly in `main.c`, so a
+  config-only snapshot uses ~9× less CPU than full SITL.
 
 The binary is then built with `make TARGET=SITL OPTIONS="SITL_STATIC CONFIGD"`
 (the `CONFIGD` token becomes `-DCONFIGD` via the Makefile — no Makefile surgery).
@@ -22,7 +25,6 @@ Any `*.patch` file dropped in this directory is applied (with `git apply`) after
 the scripted edits — use this for larger future changes not expressible as the
 in-place edits above, e.g.:
 
-- flight-loop trimming (run only the serial/CLI/MSP tasks, skip gyro/PID),
 - re-enabling the OSD stack for the OSD tab,
 - a RAM-only EEPROM so nothing is ever persisted.
 

@@ -54,10 +54,15 @@ Implemented and tested (Python side):
 - CLI: `drone-check bfcd plan <dump.txt>` (selection only) and
   `drone-check bfcd serve <dump.txt>` (run the backend).
 
+The backend also **trims the flight loop** (`-DCONFIGD`): the gyro/filter/PID,
+accel/attitude and RX tasks are gated off, so the scheduler never enters
+gyro-locked mode (falling back to plain time-based scheduling — the serial/CLI/
+MSP task keeps running), and the host loop idles slowly instead of busy-spinning
+at 20 kHz. Measured ~0.5 % CPU versus ~4.5 % for full SITL on the same machine
+(~9× lighter), which is the point of a config-only snapshot.
+
 Not implemented yet (next iterations):
 
-- Flight-loop trimming — CONFIGD currently keeps SITL's runtime; the read-only
-  guard is enforced, but the realtime tasks still run. *(BFCD-003/007)*
 - OSD tab — SITL `#undef`s `USE_OSD`; re-enabling it is deferred. *(parity with SITL)*
 - Other families (4.4, 4.3, 2025.12) and golden tests vs SITL. *(BFCD-009)*
 

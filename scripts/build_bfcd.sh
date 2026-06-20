@@ -75,6 +75,51 @@ sig==1 && /^\{/ {
   echo "   read-only guard injected"
 }
 
+# Trim the flight loop: a config snapshot needs no realtime tasks. Gate the
+# gyro/filter/PID, accel/attitude and RX tasks off under -DCONFIGD (so the
+# scheduler never enters gyro-locked mode and falls back to plain time-based
+# scheduling — the serial/CLI/MSP task keeps running), and idle the host loop
+# slowly instead of busy-spinning at 20 kHz. ~9x less CPU than full SITL.
+# Idempotent; matches exact anchor lines so it is safe across patch levels.
+apply_flightloop_trim() {
+  local tasks="$1" main="$2"
+  if ! grep -q "bf-configd: snapshot mode runs no flight loop" "$tasks"; then
+    awk '
+$0 == "    if (sensors(SENSOR_GYRO)) {" {
+  print "#ifdef CONFIGD"
+  print "    if (false) { // bf-configd: snapshot mode runs no flight loop (gyro/filter/PID)"
+  print "#else"; print $0; print "#endif"; next
+}
+$0 == "    if (sensors(SENSOR_ACC) && acc.sampleRateHz) {" {
+  print "#ifdef CONFIGD"
+  print "    if (false) { // bf-configd: no accel/attitude task in snapshot mode"
+  print "#else"; print $0; print "#endif"; next
+}
+$0 == "    setTaskEnabled(TASK_RX, true);" {
+  print "#ifdef CONFIGD"
+  print "    setTaskEnabled(TASK_RX, false); // bf-configd: no RC in snapshot mode"
+  print "#else"; print $0; print "#endif"; next
+}
+{ print }
+' "$tasks" > "$tasks.new" && mv "$tasks.new" "$tasks"
+    echo "   flight-loop tasks gated off"
+  else
+    echo "   flight-loop trim already present"
+  fi
+  # Idle the host scheduler loop slowly in snapshot mode (no flight-loop timing).
+  if ! grep -q "bf-configd: no flight loop, idle" "$main"; then
+    awk '
+/delayMicroseconds_real\(50\);/ {
+  print "#ifdef CONFIGD"
+  print "        delayMicroseconds_real(1000); // bf-configd: no flight loop, idle slowly"
+  print "#else"; print $0; print "#endif"; next
+}
+{ print }
+' "$main" > "$main.new" && mv "$main.new" "$main"
+    echo "   host idle loop throttled"
+  fi
+}
+
 build_one() {
   local tag="$1"
   local family
@@ -138,6 +183,9 @@ VTXEOF
   # from plain SITL): refuse all MSP writes under -DCONFIGD.
   echo ">> $tag: applying read-only guard"
   apply_readonly_guard src/main/msp/msp.c || return 1
+
+  echo ">> $tag: trimming the flight loop"
+  apply_flightloop_trim src/main/fc/tasks.c src/main/main.c
 
   # Optional extra patches for this family.
   local patch_dir="$PATCHES_ROOT/betaflight-$family"
