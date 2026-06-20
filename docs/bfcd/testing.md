@@ -26,6 +26,19 @@ Hardware-free smoke test of the wrapper:
 .\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>
 ```
 
+## Native backend verification (manual, Linux/WSL)
+
+The 4.5 backend is verified by building it and driving it with the probe:
+
+```bash
+bash scripts/build_bfcd.sh 4.5.3            # build into the cache
+drone-check bfcd serve some_dump.txt        # two-phase load + serve
+# from another shell, the bfcd probe against the serve-phase TCP port confirms:
+#  - reads answer (MSP_API_VERSION/FC_VARIANT/FC_VERSION),
+#  - the read-only guard refuses MSP writes (MSP_SET_*, MSP_EEPROM_WRITE -> error),
+#  - websockify is listening on ws://127.0.0.1:6762.
+```
+
 ## Golden tests against SITL (next iteration)
 
 SITL stays the reference oracle. Per supported family, the loop (plan §13):

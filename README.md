@@ -216,16 +216,21 @@ Configurator (manual connection) to `ws://127.0.0.1:6761`.
 See **[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)** for the full guide: setup,
 how it works, the VTX config patch, caching, configuration and troubleshooting.
 
-### bf-configd (experimental, in development)
+### bf-configd (experimental)
 
-**bf-configd** is a lighter, read-only alternative to SITL for the same view: it
-serves a `dump all` to the Configurator over MSP without starting the flight
-loop. The Python side (metadata detection, backend selection, MSP codec, golden
-tests against SITL) is in place; the native backend is not built yet. Inspect
-what it would do for a dump, no hardware needed:
+**bf-configd** is a read-only alternative to SITL for the same view: it serves a
+`dump all` to the Configurator over MSP using a backend built from official
+Betaflight source with a firmware-enforced **read-only guard** — every MSP write
+is refused, so an inspector can view everything but nothing can be changed or
+persisted. Working for the Betaflight 4.5 family (Linux/WSL).
 
 ```powershell
+# inspect what would happen for a dump (no hardware, no backend needed)
 .\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>
+
+# build the backend once (inside WSL/Linux), then serve a dump
+bash scripts/build_bfcd.sh 4.5.3
+.\.venv\Scripts\python.exe -m drone_check bfcd serve <dump.txt>   # -> ws://127.0.0.1:6762
 ```
 
 See **[bf-configd/README.md](bf-configd/README.md)** and **[docs/bfcd/](docs/bfcd/)**.

@@ -86,8 +86,14 @@ class Settings:
     # Distinct ports from SITL so both can coexist. See drone_check/bfcd/.
     bfcd_enabled: bool = False  # off until the native backend exists
     bfcd_cache_dir: str = "~/.cache/drone-check/bfcd"
-    bfcd_tcp_port: int = 5762
+    bfcd_run_dir: str = "~/.cache/drone-check/bfcd-run"
+    # The bf-configd binary is derived from SITL and inherits SITL's hard-coded
+    # UART->TCP mapping (UART1 == 5761), so it shares SITL's TCP base port; only
+    # one of SITL / bf-configd can serve at a time. The websockify endpoint is
+    # ours, so it gets a distinct port.
+    bfcd_tcp_port: int = 5761
     bfcd_ws_port: int = 6762
+    bfcd_boot_timeout: float = 30.0
 
 
 @dataclass
@@ -146,8 +152,10 @@ def load_settings(path: Path) -> Settings:
     bfcd = data.get("bfcd", {}) or {}
     s.bfcd_enabled = bool(bfcd.get("enabled", s.bfcd_enabled))
     s.bfcd_cache_dir = str(bfcd.get("cache_dir", s.bfcd_cache_dir))
+    s.bfcd_run_dir = str(bfcd.get("run_dir", s.bfcd_run_dir))
     s.bfcd_tcp_port = int(bfcd.get("tcp_port", s.bfcd_tcp_port))
     s.bfcd_ws_port = int(bfcd.get("ws_port", s.bfcd_ws_port))
+    s.bfcd_boot_timeout = float(bfcd.get("boot_timeout", s.bfcd_boot_timeout))
     return s
 
 

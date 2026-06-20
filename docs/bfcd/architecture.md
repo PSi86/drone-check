@@ -34,19 +34,25 @@ tooling that does *not* need Betaflight code:
 - `session.py` — the integration seam: detect → select → resolve binary →
   (later) launch and bridge to the Configurator.
 
-**Native side (next iteration, `bf-configd/`)** — a patched, official Betaflight
-build:
+**Native side (`bf-configd/`, `scripts/build_bfcd.sh`)** — official Betaflight
+built with a small read-only guard. Implemented for the 4.5 family:
 
-- A host `CONFIGD` target derived from SITL, without the gyro/PID/motor/scheduler
-  runtime (plan §7.1, BFCD-003).
-- A fake serial port (RAM RX/TX rings) so the *existing* CLI and MSP serial state
-  machines drive unchanged — minimally invasive (plan §7.2/7.3, BFCD-004).
-- Dump ingest over the original CLI path, with dangerous commands blocked
-  (BFCD-005).
-- Runtime stubs for everything MSP reads that is not config: time, sensors,
-  battery, motors, storage (plan §8, BFCD-007).
-- An MSP WebSocket endpoint (`ws://127.0.0.1:6762` by default) so the web
-  Configurator connects exactly as it does to SITL (plan §9, BFCD-006).
+- Derived from the SITL host target with `-DCONFIGD` (the `CONFIGD` token becomes
+  a `-D` define via the Makefile — no Makefile surgery). The derivation is
+  scripted in-place on a fresh official checkout, like the SITL build.
+- **Read-only guard**: a `#ifdef CONFIGD` gate at the single MSP write chokepoint
+  (`mspCommonProcessInCommand`) refuses every MSP in/write command. Reads are
+  answered normally; the Configurator cannot change or persist anything. This is
+  the one behavioural difference from SITL and the anti-cheat-relevant guarantee.
+- The VTX config table is re-enabled (config data only) so `vtxtable` is visible.
+- Serving is two-phase like SITL (load the dump over the CLI, `save`+reboot, then
+  serve from the populated config) via `drone_check/bfcd/session.py`, bridged to
+  an MSP WebSocket (`ws://127.0.0.1:6762`) with websockify (plan §9).
+
+Deferred (next iterations): flight-loop trimming (CONFIGD still runs SITL's
+runtime; the read-only guard is what makes it safe — plan §7.1/8), re-enabling
+the OSD stack (SITL `#undef`s it), runtime stubs beyond SITL's, and golden tests
+vs SITL (BFCD-009).
 
 ## Relationship to SITL
 

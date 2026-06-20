@@ -378,6 +378,39 @@ def cmd_bfcd_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bfcd_serve(args: argparse.Namespace) -> int:
+    """Load a dump into the native bf-configd backend and serve it over MSP.
+
+    Two-phase like SITL; prints the ``ws://`` URL for the Betaflight web
+    Configurator (manual connection) and runs until Enter is pressed.
+    """
+    from .bfcd.session import BfcdError, BfcdSession
+
+    config = load_config(args.config)
+    dump_text = Path(args.dump).read_text(encoding="utf-8", errors="replace")
+    session = BfcdSession(config.settings, args.config)
+    try:
+        url = session.start(
+            dump_text,
+            progress_cb=lambda sent, total: print(
+                f"\r  loading {sent}/{total} lines...", end="", file=sys.stderr),
+        )
+    except BfcdError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        return 1
+    print(f"\nbf-configd ready. Connect the Betaflight Configurator (manual "
+          f"connection) to: {url}")
+    print("Press Enter to stop.")
+    try:
+        sys.stdin.readline()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        session.stop()
+        print("bf-configd stopped.", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="drone-check")
     parser.add_argument(
@@ -435,6 +468,11 @@ def main(argv: list[str] | None = None) -> int:
         "plan", help="show metadata + backend selection for a dump (no hardware)")
     p_bp.add_argument("dump", help="path to a `dump all` text file")
     p_bp.set_defaults(func=cmd_bfcd_plan)
+
+    p_bs = bfcd_sub.add_parser(
+        "serve", help="load a dump into the native backend and serve it over MSP")
+    p_bs.add_argument("dump", help="path to a `dump all` text file")
+    p_bs.set_defaults(func=cmd_bfcd_serve)
 
     args = parser.parse_args(argv)
     return args.func(args)
