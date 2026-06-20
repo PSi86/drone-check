@@ -341,6 +341,43 @@ def cmd_sitl_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bfcd_plan(args: argparse.Namespace) -> int:
+    """Show what bf-configd would do for a dump: metadata + backend selection.
+
+    Hardware-free: reads a ``dump all`` file, detects its firmware family /
+    target / MSP API, and reports which backend would serve it and at what
+    confidence — without launching anything.
+    """
+    from .bfcd.session import BfcdError, BfcdSession
+
+    config = load_config(args.config)
+    dump_text = Path(args.dump).read_text(encoding="utf-8", errors="replace")
+    session = BfcdSession(config.settings, args.config)
+    try:
+        plan = session.prepare(dump_text)
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    md, sel = plan.metadata, plan.selection
+    print("== dump metadata ==")
+    for k in ("firmware_name", "version", "firmware_family", "target",
+              "board_name", "manufacturer_id", "msp_api", "git_hash"):
+        print(f"  {k:16}: {getattr(md, k) or '-'}")
+    print("== backend selection ==")
+    print(f"  status          : {sel.status.value}")
+    print(f"  backend         : {sel.backend or '-'}")
+    print(f"  target context  : {sel.target_context}")
+    print(f"  app compat      : {sel.app_compat or '-'}")
+    print(f"  binary present  : {'yes' if plan.binary_available else 'no'}")
+    print(f"  binary path     : {plan.binary_path}")
+    if sel.warnings:
+        print("== warnings ==")
+        for w in sel.warnings:
+            print(f"  - {w}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="drone-check")
     parser.add_argument(
@@ -390,6 +427,14 @@ def main(argv: list[str] | None = None) -> int:
         "install", help="install a bundle (from `sitl package`) into the WSL cache")
     p_si.add_argument("bundle", help="bundle archive to install")
     p_si.set_defaults(func=cmd_sitl_install)
+
+    p_bfcd = sub.add_parser(
+        "bfcd", help="bf-configd snapshot emulator (dump -> Configurator over MSP)")
+    bfcd_sub = p_bfcd.add_subparsers(dest="bfcd_command", required=True)
+    p_bp = bfcd_sub.add_parser(
+        "plan", help="show metadata + backend selection for a dump (no hardware)")
+    p_bp.add_argument("dump", help="path to a `dump all` text file")
+    p_bp.set_defaults(func=cmd_bfcd_plan)
 
     args = parser.parse_args(argv)
     return args.func(args)

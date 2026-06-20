@@ -216,6 +216,20 @@ Configurator (manual connection) to `ws://127.0.0.1:6761`.
 See **[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)** for the full guide: setup,
 how it works, the VTX config patch, caching, configuration and troubleshooting.
 
+### bf-configd (experimental, in development)
+
+**bf-configd** is a lighter, read-only alternative to SITL for the same view: it
+serves a `dump all` to the Configurator over MSP without starting the flight
+loop. The Python side (metadata detection, backend selection, MSP codec, golden
+tests against SITL) is in place; the native backend is not built yet. Inspect
+what it would do for a dump, no hardware needed:
+
+```powershell
+.\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>
+```
+
+See **[bf-configd/README.md](bf-configd/README.md)** and **[docs/bfcd/](docs/bfcd/)**.
+
 ## Output
 
 Every capture is written once into its own immutable folder (default template

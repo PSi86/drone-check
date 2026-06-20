@@ -80,6 +80,15 @@ class Settings:
     sitl_ws_port: int = 6761  # websockify endpoint for the web Configurator
     sitl_boot_timeout: float = 30.0
 
+    # bf-configd: a lighter, read-only alternative to SITL that serves a dump's
+    # config to the Configurator over MSP without starting the flight loop. The
+    # native backend is built per firmware family (see scripts/build_bfcd.sh).
+    # Distinct ports from SITL so both can coexist. See drone_check/bfcd/.
+    bfcd_enabled: bool = False  # off until the native backend exists
+    bfcd_cache_dir: str = "~/.cache/drone-check/bfcd"
+    bfcd_tcp_port: int = 5762
+    bfcd_ws_port: int = 6762
+
 
 @dataclass
 class AppConfig:
@@ -133,6 +142,12 @@ def load_settings(path: Path) -> Settings:
     s.sitl_tcp_port = int(sitl.get("tcp_port", s.sitl_tcp_port))
     s.sitl_ws_port = int(sitl.get("ws_port", s.sitl_ws_port))
     s.sitl_boot_timeout = float(sitl.get("boot_timeout", s.sitl_boot_timeout))
+
+    bfcd = data.get("bfcd", {}) or {}
+    s.bfcd_enabled = bool(bfcd.get("enabled", s.bfcd_enabled))
+    s.bfcd_cache_dir = str(bfcd.get("cache_dir", s.bfcd_cache_dir))
+    s.bfcd_tcp_port = int(bfcd.get("tcp_port", s.bfcd_tcp_port))
+    s.bfcd_ws_port = int(bfcd.get("ws_port", s.bfcd_ws_port))
     return s
 
 
