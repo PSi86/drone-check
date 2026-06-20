@@ -407,6 +407,61 @@ def cmd_bfcd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _bfcd_session(args: argparse.Namespace):
+    from .bfcd.session import BfcdSession
+
+    return BfcdSession(load_config(args.config).settings, args.config)
+
+
+def cmd_bfcd_list(args: argparse.Namespace) -> int:
+    """List the bf-configd backends cached (and whether they are portable)."""
+    from .bfcd.session import BfcdError
+
+    try:
+        items = _bfcd_session(args).list_cache()
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not items:
+        print("No bf-configd binaries cached. Build them with scripts/build_bfcd.sh, "
+              "or install a bundle with `drone-check bfcd install`.")
+        return 0
+    total = 0
+    for it in sorted(items, key=lambda x: x["family"]):
+        total += it["bytes"]
+        note = "static" if it["static"] else "DYNAMIC (not portable - rebuild)"
+        print(f"  {it['family']:14} {it['bytes']:>8} B  {note}")
+    print(f"{len(items)} family/-ies, {total} bytes total")
+    return 0
+
+
+def cmd_bfcd_package(args: argparse.Namespace) -> int:
+    """Bundle cached bf-configd binaries into a portable archive for distribution."""
+    from .bfcd.session import BfcdError
+
+    try:
+        out = _bfcd_session(args).package_cache(
+            str(Path(args.output).resolve()), args.families or [])
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(out)
+    return 0
+
+
+def cmd_bfcd_install(args: argparse.Namespace) -> int:
+    """Install a bundle (from `bfcd package`) into the bf-configd cache."""
+    from .bfcd.session import BfcdError
+
+    try:
+        families = _bfcd_session(args).install_bundle(str(Path(args.bundle).resolve()))
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Installed {len(families)} bf-configd binary/-ies: {', '.join(families)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="drone-check")
     parser.add_argument(
@@ -469,6 +524,21 @@ def main(argv: list[str] | None = None) -> int:
         "serve", help="load a dump into the native backend and serve it over MSP")
     p_bs.add_argument("dump", help="path to a `dump all` text file")
     p_bs.set_defaults(func=cmd_bfcd_serve)
+
+    p_bl = bfcd_sub.add_parser("list", help="list bf-configd binaries in the cache")
+    p_bl.set_defaults(func=cmd_bfcd_list)
+
+    p_bpk = bfcd_sub.add_parser(
+        "package", help="bundle cached binaries into a portable archive")
+    p_bpk.add_argument("output", help="output archive path, e.g. bfcd-bundle.tar.gz")
+    p_bpk.add_argument("families", nargs="*",
+                       help="families to include (default: all cached)")
+    p_bpk.set_defaults(func=cmd_bfcd_package)
+
+    p_bi = bfcd_sub.add_parser(
+        "install", help="install a bundle (from `bfcd package`) into the cache")
+    p_bi.add_argument("bundle", help="bundle archive to install")
+    p_bi.set_defaults(func=cmd_bfcd_install)
 
     args = parser.parse_args(argv)
     return args.func(args)

@@ -64,7 +64,7 @@ at 20 kHz. Measured ~0.5 % CPU versus ~4.5 % for full SITL on the same machine
 Not implemented yet (next iterations):
 
 - OSD tab — SITL `#undef`s `USE_OSD`; re-enabling it is deferred. *(parity with SITL)*
-- Other families (4.4, 4.3, 2025.12) and golden tests vs SITL. *(BFCD-009)*
+- The 4.3 family and golden tests vs SITL. *(BFCD-009)*
 
 ## Build
 
@@ -81,6 +81,18 @@ serve a dump:
 
 ```bash
 drone-check bfcd serve quad_dump.txt  # -> ws://127.0.0.1:6762 for the Configurator
+```
+
+## Distribution
+
+The backends are statically linked, so they run on any Linux/WSL without a
+toolchain. Bundle the cached binaries on a build machine and install them on an
+inspection machine — no compiler needed there (mirrors `drone-check sitl …`):
+
+```bash
+drone-check bfcd list                          # what's cached (per family, static?)
+drone-check bfcd package bfcd-bundle.tar.gz    # bundle all cached families (or list some)
+drone-check bfcd install bfcd-bundle.tar.gz    # verify checksums + extract into the cache
 ```
 
 ## Layout

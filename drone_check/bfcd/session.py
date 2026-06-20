@@ -20,6 +20,8 @@ runs the backend and drives a :class:`BfcdStatus` the web UI polls while it load
 
 from __future__ import annotations
 
+import base64
+import shlex
 import subprocess
 import sys
 import threading
@@ -123,6 +125,97 @@ class BfcdSession:
         return subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 creationflags=_NEW_PROCESS_GROUP)
+
+    def _wsl_b64(self, script: str, *, capture: bool = False, timeout: float | None = None):
+        """Run a bash script base64-encoded so its quoting/globs/``$(...)`` survive
+        the Windows → wsl.exe → bash round-trip intact. Use for non-trivial scripts."""
+        b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+        return self._wsl(f"echo {b64} | base64 -d | bash", capture=capture, timeout=timeout)
+
+    def _check_wsl(self) -> None:
+        env = "WSL" if self._use_wsl else "the Linux shell"
+        try:
+            res = self._wsl("echo ok", capture=True, timeout=30)
+        except FileNotFoundError as exc:
+            raise BfcdError(f"{env} not found — cannot manage bf-configd binaries") from exc
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise BfcdError(f"{env} not reachable: {exc}") from exc
+        if res.returncode != 0 or "ok" not in (res.stdout or ""):
+            target = f"WSL distro '{self.s.sitl_distro}'" if self._use_wsl else "the Linux shell"
+            raise BfcdError(f"{target} not available")
+
+    def _winpath_to_wsl(self, win_path: str) -> str:
+        """Map a host path into the Linux environment (unchanged on Linux; the WSL
+        path on Windows, valid even for a not-yet-existing file)."""
+        if not self._use_wsl:
+            return win_path
+        res = self._wsl_b64(f"wslpath -a {shlex.quote(win_path)}", capture=True, timeout=20)
+        out = (res.stdout or "").strip()
+        if res.returncode != 0 or not out:
+            raise BfcdError(f"could not map Windows path into WSL: {win_path}")
+        return out
+
+    # -- distribution (list / package / install pre-built binaries) -------
+
+    def list_cache(self) -> list[dict]:
+        """The bf-configd backends present in the cache: ``[{family, bytes, static}]``."""
+        self._check_wsl()
+        cache = self.s.bfcd_cache_dir
+        script = (
+            f'for d in {cache}/*/; do e="$d/bf-configd.elf"; [ -f "$e" ] || continue; '
+            f'if file "$e" | grep -q "statically linked"; then s=static; else s=dynamic; fi; '
+            f'printf "%s\\t%s\\t%s\\n" "$(basename "$d")" "$(stat -c%s "$e")" "$s"; done'
+        )
+        res = self._wsl_b64(script, capture=True, timeout=30)
+        items: list[dict] = []
+        for line in (res.stdout or "").splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) == 3:
+                items.append({"family": parts[0], "bytes": int(parts[1]),
+                              "static": parts[2] == "static"})
+        return items
+
+    def package_cache(self, out_win_path: str, families: list[str]) -> str:
+        """Bundle cached binaries (all, or the given families) into a portable
+        archive at the host path ``out_win_path``. Returns the script output."""
+        self._check_wsl()
+        script_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "package_bfcd.sh"
+        if not script_path.is_file():
+            raise BfcdError(f"package script not found: {script_path}")
+        wsl_script = self._winpath_to_wsl(str(script_path))
+        wsl_out = self._winpath_to_wsl(out_win_path)
+        args = " ".join(shlex.quote(v) for v in families)
+        res = self._wsl_b64(f"bash {shlex.quote(wsl_script)} {shlex.quote(wsl_out)} {args}",
+                            capture=True, timeout=300)
+        if res.returncode != 0:
+            raise BfcdError(f"packaging failed: {(res.stderr or res.stdout or '').strip()}")
+        return (res.stdout or "").strip()
+
+    def install_bundle(self, bundle_win_path: str) -> list[str]:
+        """Install a bundle (created by ``package_cache``) into the cache, verifying
+        checksums. Returns the families the bundle contained."""
+        self._check_wsl()
+        wsl_bundle = self._winpath_to_wsl(bundle_win_path)
+        listing = self._wsl_b64(f"tar -tzf {shlex.quote(wsl_bundle)}", capture=True, timeout=60)
+        if listing.returncode != 0:
+            raise BfcdError(f"cannot read bundle {bundle_win_path}: "
+                            f"{(listing.stderr or '').strip()}")
+        families = sorted({
+            ln.split("/")[1] for ln in (listing.stdout or "").splitlines()
+            if ln.strip().endswith("bf-configd.elf") and "/" in ln.strip().strip("./")
+        })
+        if not families:
+            raise BfcdError(f"{bundle_win_path} is not a bf-configd bundle (no binaries inside)")
+        cache = self.s.bfcd_cache_dir
+        script = (
+            f"set -e; mkdir -p {cache}; tar -xzf {shlex.quote(wsl_bundle)} -C {cache}; "
+            f"cd {cache}; sha256sum -c SHA256SUMS 1>&2; rm -f SHA256SUMS bundle-info.txt"
+        )
+        res = self._wsl_b64(script, capture=True, timeout=180)
+        if res.returncode != 0:
+            raise BfcdError(f"install failed (checksum or extract): "
+                            f"{(res.stderr or res.stdout or '').strip()}")
+        return families
 
     # -- availability (UI gating) ----------------------------------------
 
