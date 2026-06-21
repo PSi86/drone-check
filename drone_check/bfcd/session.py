@@ -101,6 +101,15 @@ class BfcdSession:
         self._proxy: subprocess.Popen | None = None
         # Memoized environment probe (gates whether the feature is offered).
         self._env_ok: bool | None = None
+        # Auto-restart watchdog: when the Configurator leaves CLI mode (or sends
+        # save/reboot) the backend process exits like a rebooting FC; the watchdog
+        # relaunches it from the saved config so the Configurator reconnects.
+        self._serving = False
+        self._run_dir: str | None = None
+        self._elf: str | None = None
+        self._host = "127.0.0.1"
+        self._watchdog: threading.Thread | None = None
+        self._watchdog_stop = threading.Event()
         # Progress state (updated from the start() worker thread, read by status()).
         self._lock = threading.Lock()
         self._phase = "idle"
@@ -327,6 +336,10 @@ class BfcdSession:
             pass
 
     def stop(self) -> None:
+        # Stop the watchdog before tearing down, so it does not relaunch the
+        # backend we are about to kill.
+        self._serving = False
+        self._stop_watchdog()
         self._teardown()
         with self._lock:
             self._version = self._capture_id = self._connect_url = None
@@ -335,6 +348,55 @@ class BfcdSession:
     # bf-configd holds no WSL ownership of its own (SitlRunner manages the WSL
     # lifecycle); shutdown just ends the session.
     shutdown = stop
+
+    # -- auto-restart watchdog -------------------------------------------
+
+    def _stop_watchdog(self) -> None:
+        self._watchdog_stop.set()
+        wd = self._watchdog
+        if wd is not None and wd.is_alive() and wd is not threading.current_thread():
+            wd.join(timeout=3)
+        self._watchdog = None
+
+    def _start_watchdog(self) -> None:
+        self._stop_watchdog()
+        self._watchdog_stop.clear()
+        self._watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
+        self._watchdog.start()
+
+    def _watchdog_loop(self) -> None:
+        """Relaunch the serve-phase backend if it exits while we want to serve.
+
+        The Configurator leaving CLI mode (or a save/reboot) makes the backend
+        ``exit()`` like a rebooting FC. We relaunch it from the same run dir —
+        which still holds the saved eeprom — so it comes back with the same
+        config and the Configurator's WebSocket reconnects through websockify
+        (whose target port is unchanged). Rate-limited so a backend that cannot
+        boot does not spin forever.
+        """
+        restarts: list[float] = []
+        while not self._watchdog_stop.wait(0.5):
+            if not self._serving:
+                continue
+            be = self._backend
+            if be is None or be.poll() is None:
+                continue  # still running
+            now = time.monotonic()
+            restarts = [t for t in restarts if now - t < 20.0]
+            if len(restarts) >= 5:
+                # Boot loop — give up rather than hammer the host.
+                self._serving = False
+                self._progress("idle", "bf-configd stopped after repeated restarts",
+                               starting=False)
+                return
+            restarts.append(now)
+            self._progress("starting2", "Rebooting bf-configd…")
+            self._backend = self._wsl(
+                f"cd {self._run_dir} && exec {self._elf} >/dev/null 2>&1")
+            if _wait_port(self._host, self.s.bfcd_tcp_port, timeout=self.s.bfcd_boot_timeout):
+                self._progress("ready", "Ready", starting=False)
+            # If it did not come up, the next iteration sees it down and retries
+            # (counted against the rate limit).
 
     def _wait_port_free(self, host: str, port: int,
                         attempts: int = 40, delay: float = 0.15) -> bool:
@@ -368,13 +430,17 @@ class BfcdSession:
                 f"(expected at {plan.binary_path})"
             )
 
-        host = "127.0.0.1"
+        host = self._host
         tcp = self.s.bfcd_tcp_port
         elf = plan.binary_path
         run_dir = f"{self.s.bfcd_run_dir}/{capture_id}"
         framed = supports_framed_cli(plan.metadata.version)
 
-        self._teardown()  # only one session at a time
+        # Only one session at a time: stop any prior watchdog + processes first.
+        self._serving = False
+        self._stop_watchdog()
+        self._teardown()
+        self._run_dir, self._elf = run_dir, elf
 
         try:
             # Phase 1: boot fresh, push the dump through the CLI, save (reboots).
@@ -434,4 +500,9 @@ class BfcdSession:
             raise BfcdError(f"bf-configd start failed: {exc}") from exc
 
         self._progress("ready", "Ready", starting=False)
+        # Serve until stopped; relaunch the backend if a Configurator CLI exit /
+        # reboot makes it exit, so the connection self-heals like a real FC.
+        if self.s.bfcd_auto_restart:
+            self._serving = True
+            self._start_watchdog()
         return self.status()

@@ -53,6 +53,11 @@ built with a small read-only guard. Implemented for the 4.5 family:
 - Serving is two-phase like SITL (load the dump over the CLI, `save`+reboot, then
   serve from the populated config) via `drone_check/bfcd/session.py`, bridged to
   an MSP WebSocket (`ws://127.0.0.1:6762`) with websockify (plan §9).
+- An **auto-restart watchdog** relaunches the backend if it exits: leaving CLI
+  mode in the Configurator (or a save/reboot) makes the SITL-derived backend
+  `exit()` like a rebooting FC, so the watchdog reloads it from the saved config
+  (rate-limited) and the Configurator's WebSocket reconnects — without it the
+  view would go dead after one CLI session. (`bfcd_auto_restart`, on by default.)
 - The web UI offers it next to SITL on `/logs` (plan §BFCD-012).
 
 Deferred (next iterations): re-enabling the OSD stack (SITL `#undef`s it),

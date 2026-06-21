@@ -37,6 +37,48 @@ def test_start_without_binary_raises_not_built(monkeypatch):
         s.start(BETAFLIGHT_DUMP)
 
 
+class _FakeProc:
+    """Minimal Popen stand-in: poll() returns None while 'alive'."""
+
+    def __init__(self, alive: bool):
+        self._alive = alive
+
+    def poll(self):
+        return None if self._alive else 0
+
+
+def test_watchdog_relaunches_dead_backend(monkeypatch):
+    """When the backend exits (a Configurator CLI exit / reboot), the watchdog
+    relaunches it from the same run dir so the Configurator can reconnect."""
+    import time
+
+    import drone_check.bfcd.session as sess_mod
+
+    s = BfcdSession(Settings(), CONFIG_DIR)
+    monkeypatch.setattr(sess_mod, "_wait_port", lambda *a, **k: True)
+    launches = []
+
+    def fake_wsl(script, **k):
+        launches.append(script)
+        return _FakeProc(alive=True)  # the relaunched backend is up
+
+    monkeypatch.setattr(s, "_wsl", fake_wsl)
+    s._run_dir, s._elf = "/run/x", "/cache/4.5/bf-configd.elf"
+    s._backend = _FakeProc(alive=False)  # already exited (rebooted)
+    s._serving = True
+    s._start_watchdog()
+    try:
+        for _ in range(60):  # watchdog checks every 0.5s
+            if launches:
+                break
+            time.sleep(0.05)
+    finally:
+        s._serving = False
+        s._stop_watchdog()
+    assert launches, "watchdog did not relaunch the exited backend"
+    assert "/run/x" in launches[0] and s._backend.poll() is None
+
+
 # -- distribution (list / package / install) --------------------------------
 
 
