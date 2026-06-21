@@ -62,9 +62,8 @@ From the repository root, run the guided installer for your OS — it checks
 Python, creates the `.venv`, installs drone-check, and **asks** whether you also
 want the "View in Configurator" feature. If you opt in it downloads the pre-built
 binary bundles (bf-configd — the read-only default — and SITL) from the project's
-`binaries` GitHub release, so no toolchain is needed. (The download uses the
-GitHub CLI `gh`, as the repo is private; install/authenticate `gh` first, or pass
-a local bundle with `--bfcd-bundle` / `--sitl-bundle`.)
+`binaries` GitHub release, so no toolchain is needed. (The download needs no
+authentication; or pass a local bundle with `--bfcd-bundle` / `--sitl-bundle`.)
 
 ```powershell
 # Windows (binaries run under WSL)

@@ -130,21 +130,19 @@ if [ "$WANT_SITL" -ne 1 ]; then
 fi
 
 # Download the *-bundle release asset whose name contains $1 to $2, from the
-# dedicated binaries release. Prefer the GitHub CLI (works for the private repo,
-# using the user's existing auth); fall back to curl if the repo is public.
+# dedicated public 'binaries' release. Uses curl (no auth needed); falls back to
+# the GitHub CLI if curl is unavailable.
 fetch_asset() {
   local pat="$1" out="$2" url
   info "Fetching $pat from the '$GH_ASSET_TAG' release ..."
-  if command -v gh >/dev/null 2>&1 \
-     && gh release download "$GH_ASSET_TAG" --repo "$GH_REPO" \
-          --pattern "${pat}*.tar.gz" --output "$out" --clobber >/dev/null 2>&1; then
-    return 0
+  if command -v curl >/dev/null 2>&1; then
+    url="$(curl -fsSL "https://api.github.com/repos/$GH_REPO/releases/tags/$GH_ASSET_TAG" 2>/dev/null \
+      | grep -oE 'https://[^"]*'"$pat"'[^"]*\.tar\.gz' | head -1)"
+    if [ -n "$url" ] && curl -fsSL "$url" -o "$out"; then return 0; fi
   fi
-  command -v curl >/dev/null 2>&1 || return 1
-  url="$(curl -fsSL "https://api.github.com/repos/$GH_REPO/releases/tags/$GH_ASSET_TAG" 2>/dev/null \
-    | grep -oE 'https://[^"]*'"$pat"'[^"]*\.tar\.gz' | head -1)"
-  [ -n "$url" ] || return 1
-  curl -fsSL "$url" -o "$out"
+  command -v gh >/dev/null 2>&1 \
+    && gh release download "$GH_ASSET_TAG" --repo "$GH_REPO" \
+         --pattern "${pat}*.tar.gz" --output "$out" --clobber >/dev/null 2>&1
 }
 
 # Provision one backend: prefer an explicit/local bundle, else download it from
