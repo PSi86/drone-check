@@ -407,6 +407,7 @@ class BfcdSession:
                 f"cd {self._run_dir} && exec {self._elf} >/dev/null 2>&1")
             if _wait_port(self._host, self.s.bfcd_tcp_port, timeout=self.s.bfcd_boot_timeout):
                 if self.s.bfcd_ready_settle > 0:
+                    self._progress("settling", "Waiting for the connection to be ready…")
                     time.sleep(self.s.bfcd_ready_settle)
                 self._progress("ready", "Ready", starting=False)
             # If it did not come up, the next iteration sees it down and retries
@@ -498,6 +499,7 @@ class BfcdSession:
                 raise BfcdError("bf-configd did not start (serve phase)")
             self._msp_port = msp_port
             if self.s.bfcd_ready_settle > 0:
+                self._progress("settling", "Waiting for the connection to be ready…")
                 time.sleep(self.s.bfcd_ready_settle)  # optional extra slot-free margin
 
             # websockify so the WebSocket-only web Configurator can connect. It
