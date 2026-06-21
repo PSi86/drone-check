@@ -49,8 +49,8 @@ from .metadata import DumpMetadata, detect_metadata
 # exactly once (via _find_msp_port, which we need anyway to locate the MSP UART),
 # and rely on the websockify start that follows — far longer than the one dyad
 # tick SITL needs to free the slot — to leave it free, rather than churning more
-# connections. A configurable extra settle (bfcd_ready_settle, default 0 = off)
-# is available for slow hosts that still occasionally reject the first connect.
+# connections. A configurable extra settle (bfcd_ready_settle, default 2s) adds a
+# safety margin on top, and can be set to 0 to disable it.
 
 # The backend binary's process name (comm, truncated to 15 chars) used for the
 # pkill fallback that frees the TCP port after a reboot.

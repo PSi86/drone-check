@@ -102,11 +102,11 @@ class Settings:
     bfcd_tcp_port: int = 5761
     bfcd_ws_port: int = 6762
     bfcd_boot_timeout: float = 30.0
-    # Optional extra delay (seconds) after the MSP locate-probe before reporting
-    # ready. 0 = off (default): SITL's single connection slot is already freed by
-    # the time websockify has started. Raise it only if a slow host occasionally
-    # rejects the Configurator's first connect.
-    bfcd_ready_settle: float = 0.0
+    # Extra delay (seconds) after the MSP locate-probe before reporting ready, a
+    # margin so SITL's single connection slot is certainly free for the
+    # Configurator's first connect. Set to 0 to disable (the websockify start
+    # already covers the slot's free time on a typical host).
+    bfcd_ready_settle: float = 2.0
     # When the Configurator leaves CLI mode (or sends save/reboot), the backend
     # process exits like a rebooting FC. With this on, the session relaunches it
     # from the saved config so the Configurator can reconnect — mirroring a real
