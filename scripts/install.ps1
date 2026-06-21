@@ -151,10 +151,20 @@ Ok "WSL with '$Distro' is available."
 
 # 3b. Configurator binaries: install pre-built bundles (no toolchain needed).
 # Download the *-bundle release asset whose name contains $pat to $out, from the
-# dedicated binaries release. Uses the GitHub CLI (works for the private repo,
-# with the user's existing auth).
+# dedicated public 'binaries' release. Uses the GitHub API (no auth needed);
+# falls back to the GitHub CLI.
 function Get-Asset($pat, $out) {
     Info "Fetching $pat from the '$GhAssetTag' release ..."
+    try {
+        $rel = Invoke-RestMethod -UseBasicParsing `
+            -Uri "https://api.github.com/repos/$GhRepo/releases/tags/$GhAssetTag" `
+            -Headers @{ 'User-Agent' = 'drone-check-installer' }
+        $asset = $rel.assets | Where-Object { $_.name -like "$pat*.tar.gz" } | Select-Object -First 1
+        if ($asset) {
+            Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -OutFile $out
+            if (Test-Path $out) { return $true }
+        }
+    } catch {}
     if (Get-Command gh -ErrorAction SilentlyContinue) {
         $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
         try {
