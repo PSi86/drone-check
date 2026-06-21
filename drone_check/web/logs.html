@@ -311,6 +311,12 @@
       } else {
         bar.classList.add("hidden");
       }
+      // The footer bar is position:fixed, so it overlaps the page content and
+      // would hide the last log row. Reserve exactly its current height as the
+      // body's bottom padding while it is visible (the height varies by phase),
+      // and release it again once the bar is hidden.
+      const open = !bar.classList.contains("hidden");
+      document.body.style.paddingBottom = open ? (bar.offsetHeight + 16) + "px" : "";
     }
 
     // Epoch guard: a stop() (or a new open) bumps this so a slow, now-obsolete
