@@ -102,6 +102,11 @@ class Settings:
     bfcd_tcp_port: int = 5761
     bfcd_ws_port: int = 6762
     bfcd_boot_timeout: float = 30.0
+    # Optional extra delay (seconds) after the MSP locate-probe before reporting
+    # ready. 0 = off (default): SITL's single connection slot is already freed by
+    # the time websockify has started. Raise it only if a slow host occasionally
+    # rejects the Configurator's first connect.
+    bfcd_ready_settle: float = 0.0
     # When the Configurator leaves CLI mode (or sends save/reboot), the backend
     # process exits like a rebooting FC. With this on, the session relaunches it
     # from the saved config so the Configurator can reconnect — mirroring a real
@@ -172,6 +177,7 @@ def load_settings(path: Path) -> Settings:
     s.bfcd_tcp_port = int(bfcd.get("tcp_port", s.bfcd_tcp_port))
     s.bfcd_ws_port = int(bfcd.get("ws_port", s.bfcd_ws_port))
     s.bfcd_boot_timeout = float(bfcd.get("boot_timeout", s.bfcd_boot_timeout))
+    s.bfcd_ready_settle = float(bfcd.get("ready_settle", s.bfcd_ready_settle))
     s.bfcd_auto_restart = bool(bfcd.get("auto_restart", s.bfcd_auto_restart))
     return s
 

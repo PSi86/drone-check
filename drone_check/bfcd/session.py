@@ -49,7 +49,8 @@ from .metadata import DumpMetadata, detect_metadata
 # exactly once (via _find_msp_port, which we need anyway to locate the MSP UART),
 # and rely on the websockify start that follows — far longer than the one dyad
 # tick SITL needs to free the slot — to leave it free, rather than churning more
-# connections or guessing with a fixed delay.
+# connections. A configurable extra settle (bfcd_ready_settle, default 0 = off)
+# is available for slow hosts that still occasionally reject the first connect.
 
 # The backend binary's process name (comm, truncated to 15 chars) used for the
 # pkill fallback that frees the TCP port after a reboot.
@@ -405,6 +406,8 @@ class BfcdSession:
             self._backend = self._wsl(
                 f"cd {self._run_dir} && exec {self._elf} >/dev/null 2>&1")
             if _wait_port(self._host, self.s.bfcd_tcp_port, timeout=self.s.bfcd_boot_timeout):
+                if self.s.bfcd_ready_settle > 0:
+                    time.sleep(self.s.bfcd_ready_settle)
                 self._progress("ready", "Ready", starting=False)
             # If it did not come up, the next iteration sees it down and retries
             # (counted against the rate limit).
@@ -494,6 +497,8 @@ class BfcdSession:
             if msp_port is None:
                 raise BfcdError("bf-configd did not start (serve phase)")
             self._msp_port = msp_port
+            if self.s.bfcd_ready_settle > 0:
+                time.sleep(self.s.bfcd_ready_settle)  # optional extra slot-free margin
 
             # websockify so the WebSocket-only web Configurator can connect. It
             # only opens a UART connection when a real WebSocket client connects,
