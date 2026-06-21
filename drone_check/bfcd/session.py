@@ -42,12 +42,14 @@ from .compat import BackendSelection, load_matrix, select_backend
 from .metadata import DumpMetadata, detect_metadata
 
 # SITL's TCP UART (serial_tcp.c) accepts exactly ONE connection at a time — a
-# second is closed immediately. So readiness must NOT actively probe the MSP port
-# right before the Configurator connects: that holds the single slot, and if its
-# close has not been processed when the Configurator connects, the Configurator
-# is rejected and must retry. We prove MSP once (via _find_msp_port) and then let
-# the slot settle free, rather than churning connections.
-_READY_SETTLE = 0.5
+# second is closed immediately. So readiness must NOT keep probing the MSP port
+# right before the Configurator connects: each probe holds the single slot, and a
+# probe whose close has not been processed when the Configurator connects gets the
+# Configurator rejected (it then retries — slowly). We prove the backend serves
+# exactly once (via _find_msp_port, which we need anyway to locate the MSP UART),
+# and rely on the websockify start that follows — far longer than the one dyad
+# tick SITL needs to free the slot — to leave it free, rather than churning more
+# connections or guessing with a fixed delay.
 
 # The backend binary's process name (comm, truncated to 15 chars) used for the
 # pkill fallback that frees the TCP port after a reboot.
@@ -403,9 +405,6 @@ class BfcdSession:
             self._backend = self._wsl(
                 f"cd {self._run_dir} && exec {self._elf} >/dev/null 2>&1")
             if _wait_port(self._host, self.s.bfcd_tcp_port, timeout=self.s.bfcd_boot_timeout):
-                # Let the port-probe's connection close settle (single-slot UART)
-                # so the slot is free when the Configurator reconnects.
-                time.sleep(_READY_SETTLE)
                 self._progress("ready", "Ready", starting=False)
             # If it did not come up, the next iteration sees it down and retries
             # (counted against the rate limit).
@@ -486,15 +485,15 @@ class BfcdSession:
             # Phase 2: serve from the saved config; this is the session backend.
             self._progress("starting2", "Starting bf-configd from saved configuration…")
             self._backend = self._wsl(f"cd {run_dir} && exec {elf} >/dev/null 2>&1")
-            # _find_msp_port proves the backend answers MSP. It connects+closes on
-            # the single-slot UART, so once it returns, settle to let that close be
-            # processed — leaving the one connection slot free for the Configurator.
+            # _find_msp_port is itself the readiness proof: it gets a real MSP
+            # reply (so the backend is genuinely serving) and locates the MSP UART.
+            # Its probe connects+closes on the single-slot UART; SITL frees that
+            # slot within ~one dyad tick, and starting websockify below takes far
+            # longer than that, so the slot is free by the time we report ready.
             msp_port = _find_msp_port(host, tcp, count=8, timeout=self.s.bfcd_boot_timeout)
             if msp_port is None:
                 raise BfcdError("bf-configd did not start (serve phase)")
             self._msp_port = msp_port
-            self._progress("verifying", "Finishing startup…")
-            time.sleep(_READY_SETTLE)
 
             # websockify so the WebSocket-only web Configurator can connect. It
             # only opens a UART connection when a real WebSocket client connects,
