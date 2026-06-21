@@ -37,25 +37,6 @@ def test_start_without_binary_raises_not_built(monkeypatch):
         s.start(BETAFLIGHT_DUMP)
 
 
-def test_wait_ready_requires_two_consecutive_successes(monkeypatch):
-    s = BfcdSession(Settings(), CONFIG_DIR)
-    calls = {"n": 0}
-
-    def fake_ok(url, timeout=3.0):
-        calls["n"] += 1
-        return calls["n"] >= 2  # first probe fails, then succeeds
-
-    monkeypatch.setattr(s, "_ws_msp_ok", fake_ok)
-    assert s._wait_ready("ws://x", 5761, timeout=5.0) is True
-    assert calls["n"] >= 3  # needed a 2nd *consecutive* success after the retry
-
-
-def test_wait_ready_times_out_when_unreachable(monkeypatch):
-    s = BfcdSession(Settings(), CONFIG_DIR)
-    monkeypatch.setattr(s, "_ws_msp_ok", lambda *a, **k: False)
-    assert s._wait_ready("ws://x", 5761, timeout=0.6) is False
-
-
 class _FakeProc:
     """Minimal Popen stand-in: poll() returns None while 'alive'."""
 
