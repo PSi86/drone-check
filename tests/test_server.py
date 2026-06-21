@@ -302,6 +302,9 @@ class _FakeSitl:
         self.stopped = False
         self.shut_down = False
 
+    def set_status_listener(self, fn):
+        pass
+
     def start(self, capture_id, version, dump_text):
         from drone_check.sitl import SitlStatus
         self.started = (capture_id, version)
@@ -373,6 +376,9 @@ class _FakeBfcd:
         self.started = None
         self.stopped = False
         self.shut_down = False
+
+    def set_status_listener(self, fn):
+        pass
 
     def start(self, dump_text, capture_id="", version=""):
         from drone_check.bfcd.session import BfcdStatus

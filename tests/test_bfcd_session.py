@@ -37,6 +37,16 @@ def test_start_without_binary_raises_not_built(monkeypatch):
         s.start(BETAFLIGHT_DUMP)
 
 
+def test_status_listener_fires_on_progress():
+    s = BfcdSession(Settings(), CONFIG_DIR)
+    seen = []
+    s.set_status_listener(lambda st: seen.append((st.phase, st.starting)))
+    s._progress("loading", "Loading…", 3, 10)
+    s._progress("ready", "Ready", starting=False)
+    assert ("loading", True) in seen
+    assert ("ready", False) in seen
+
+
 class _FakeProc:
     """Minimal Popen stand-in: poll() returns None while 'alive'."""
 

@@ -46,6 +46,9 @@ class Hub:
         # The latest state event, replayed to newly connected clients so they
         # always see the *current* state — not a stale historical one.
         self._last_state: dict | None = None
+        # The latest "viewer" (SITL/bf-configd) status, tracked separately so it
+        # is replayed independently of the capture state.
+        self._last_viewer: dict | None = None
         self._lock = threading.Lock()
         # Operator-supplied fallback pilot name (folder label only).
         self._operator_pilot: str = ""
@@ -64,7 +67,10 @@ class Hub:
             pass
 
     def _broadcast(self, event: dict) -> None:
-        if event.get("type") in self._STATE_EVENTS:
+        etype = event.get("type")
+        if etype == "viewer":
+            self._last_viewer = event
+        elif etype in self._STATE_EVENTS:
             self._last_state = event
         for ws in list(self._clients):
             asyncio.create_task(self._safe_send(ws, event))
@@ -79,6 +85,8 @@ class Hub:
         self._clients.add(ws)
         if self._last_state is not None:
             await ws.send_json(self._last_state)
+        if self._last_viewer is not None:
+            await ws.send_json(self._last_viewer)
 
     def unregister(self, ws: WebSocket) -> None:
         self._clients.discard(ws)
@@ -110,6 +118,24 @@ def create_app(config: AppConfig, demo: bool = False,
         nonlocal hub, applog
         loop = asyncio.get_running_loop()
         hub = Hub(loop)
+
+        # Push the configured viewer backend's status to browsers over the
+        # WebSocket on every change, so the logs page reflects each phase live
+        # without polling (which a backgrounded tab throttles, dropping phases).
+        def _viewer_event(name: str, st) -> dict:
+            return {
+                "type": "viewer", "backend": name,
+                "running": st.running, "starting": st.starting,
+                "phase": st.phase, "detail": st.detail,
+                "sent": st.sent, "total": st.total,
+                "version": st.version, "capture_id": st.capture_id,
+                "connect_url": st.connect_url,
+            }
+
+        v_name = "sitl" if config.settings.viewer_backend == "sitl" else "bfcd"
+        v_runner = sitl if v_name == "sitl" else bfcd
+        v_runner.set_status_listener(lambda st: hub.emit(_viewer_event(v_name, st)))
+
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         applog = AppLog(
             config.settings.log_dir / f"session-{stamp}.log",
