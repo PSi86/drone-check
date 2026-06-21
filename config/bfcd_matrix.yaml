@@ -1,0 +1,30 @@
+# bf-configd backend compatibility matrix.
+#
+# Each firmware family that bf-configd supports (or plans to) maps to the
+# backend binary that serves it and the Configurator/App versions it targets.
+# Families NOT listed here are treated as unsupported and fail closed — the plan
+# (§5.1) is explicit that bf-configd supports an explicit, tested matrix, not
+# "any dump in any app". App-compatibility notes come from
+# https://betaflight.com/docs/wiki/app.
+#
+# status:
+#   mvp     – primary, tested family (the MVP target)
+#   phase2  – planned, backend defined, not yet proven
+#   phase3  – planned, later
+families:
+  "4.5":
+    status: mvp
+    backend: bf-configd-4.5
+    app: "Configurator/App 10.10.x / 2025.12.x"
+  "4.4":
+    status: phase2
+    backend: bf-configd-4.4
+    app: "Configurator/App 10.10.x"
+  "4.3":
+    status: phase2
+    backend: bf-configd-4.3
+    app: "Configurator/App 10.10.x / 2025.12.x"
+  "2025.12":
+    status: phase3
+    backend: bf-configd-2025.12
+    app: "Configurator/App 2025.12.x"

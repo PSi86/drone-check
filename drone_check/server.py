@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .applog import AppLog
 from . import captures
+from .bfcd.session import BfcdError, BfcdSession
 from .config import AppConfig
 from .sitl import SitlCancelled, SitlError, SitlRunner
 from .flightcontroller import FakeFlightController, RealFlightController
@@ -45,6 +46,9 @@ class Hub:
         # The latest state event, replayed to newly connected clients so they
         # always see the *current* state — not a stale historical one.
         self._last_state: dict | None = None
+        # The latest "viewer" (SITL/bf-configd) status, tracked separately so it
+        # is replayed independently of the capture state.
+        self._last_viewer: dict | None = None
         self._lock = threading.Lock()
         # Operator-supplied fallback pilot name (folder label only).
         self._operator_pilot: str = ""
@@ -63,7 +67,10 @@ class Hub:
             pass
 
     def _broadcast(self, event: dict) -> None:
-        if event.get("type") in self._STATE_EVENTS:
+        etype = event.get("type")
+        if etype == "viewer":
+            self._last_viewer = event
+        elif etype in self._STATE_EVENTS:
             self._last_state = event
         for ws in list(self._clients):
             asyncio.create_task(self._safe_send(ws, event))
@@ -78,6 +85,8 @@ class Hub:
         self._clients.add(ws)
         if self._last_state is not None:
             await ws.send_json(self._last_state)
+        if self._last_viewer is not None:
+            await ws.send_json(self._last_viewer)
 
     def unregister(self, ws: WebSocket) -> None:
         self._clients.discard(ws)
@@ -94,17 +103,39 @@ class Hub:
             self._operator_pilot = (name or "").strip()
 
 
-def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
+def create_app(config: AppConfig, demo: bool = False,
+               config_dir: Path | None = None) -> FastAPI:
     hub: Hub | None = None
     applog: AppLog | None = None
     stop_flag = threading.Event()
     sitl = SitlRunner(config.settings)
+    # bf-configd needs the config dir for its compatibility matrix; fall back to
+    # the packaged config when not given (e.g. in tests).
+    bfcd = BfcdSession(config.settings, config_dir or (_WEB_DIR.parent.parent / "config"))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         nonlocal hub, applog
         loop = asyncio.get_running_loop()
         hub = Hub(loop)
+
+        # Push the configured viewer backend's status to browsers over the
+        # WebSocket on every change, so the logs page reflects each phase live
+        # without polling (which a backgrounded tab throttles, dropping phases).
+        def _viewer_event(name: str, st) -> dict:
+            return {
+                "type": "viewer", "backend": name,
+                "running": st.running, "starting": st.starting,
+                "phase": st.phase, "detail": st.detail,
+                "sent": st.sent, "total": st.total,
+                "version": st.version, "capture_id": st.capture_id,
+                "connect_url": st.connect_url,
+            }
+
+        v_name = "sitl" if config.settings.viewer_backend == "sitl" else "bfcd"
+        v_runner = sitl if v_name == "sitl" else bfcd
+        v_runner.set_status_listener(lambda st: hub.emit(_viewer_event(v_name, st)))
+
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         applog = AppLog(
             config.settings.log_dir / f"session-{stamp}.log",
@@ -125,6 +156,7 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
         stop_flag.set()
         # End the SITL session and, if drone-check started WSL, stop WSL too.
         sitl.shutdown()
+        bfcd.shutdown()
         applog.info("session stopping")
         applog.close()
 
@@ -219,6 +251,85 @@ def create_app(config: AppConfig, demo: bool = False) -> FastAPI:
     async def sitl_stop() -> JSONResponse:
         await asyncio.to_thread(sitl.stop)
         return JSONResponse({"ok": True})
+
+    @app.post("/api/captures/{capture_id}/bfcd")
+    async def open_in_bfcd(capture_id: str) -> JSONResponse:
+        """Load a capture into the read-only bf-configd backend and expose it."""
+        if not config.settings.bfcd_enabled:
+            return JSONResponse({"ok": False, "reason": "bf-configd view disabled in config"})
+        try:
+            folder = captures.resolve_capture_dir(config.settings.log_dir, capture_id)
+        except ValueError:
+            return JSONResponse({"ok": False, "reason": "unknown capture"}, status_code=404)
+
+        snapshot = captures._read_json(folder / "snapshot.json") or {}
+        version = (snapshot.get("firmware") or {}).get("version", "")
+        dump_file = folder / "raw" / captures.DUMP_FILENAME
+        if not dump_file.is_file():
+            return JSONResponse({"ok": False, "reason": "capture has no dump_all.txt"})
+        dump_text = dump_file.read_text(encoding="utf-8", errors="replace")
+
+        # Starting the backend blocks (boot + two-phase load); run it off the loop.
+        def _run():
+            return bfcd.start(dump_text, capture_id=capture_id, version=version)
+
+        try:
+            status = await asyncio.to_thread(_run)
+        except BfcdError as exc:
+            # Read-only / unsupported / not-built — surface so the UI can fall
+            # back to SITL with a clear message.
+            return JSONResponse({"ok": False, "reason": str(exc)})
+        if applog is not None:
+            applog.info(f"bf-configd session for {capture_id} ({version}) → {status.connect_url}")
+        return JSONResponse({
+            "ok": True,
+            "connect_url": status.connect_url,
+            "version": status.version,
+            "note": "bf-configd is read-only: the Configurator can view everything "
+                    "but every write is refused by the firmware. Motor/mixer tabs "
+                    "show warnings (no real outputs) — that is expected.",
+        })
+
+    @app.get("/api/bfcd/status")
+    async def bfcd_status() -> JSONResponse:
+        st = bfcd.status()
+        return JSONResponse({
+            # Offer the feature only when enabled in config AND the Linux env is
+            # present; the logs page hides the bf-configd button otherwise.
+            "enabled": bfcd.available(),
+            "running": st.running, "starting": st.starting,
+            "phase": st.phase, "detail": st.detail,
+            "sent": st.sent, "total": st.total,
+            "version": st.version, "capture_id": st.capture_id,
+            "connect_url": st.connect_url,
+        })
+
+    @app.post("/api/bfcd/stop")
+    async def bfcd_stop() -> JSONResponse:
+        await asyncio.to_thread(bfcd.stop)
+        return JSONResponse({"ok": True})
+
+    def _viewer():
+        """The single Configurator backend chosen in config: (name, runner)."""
+        if config.settings.viewer_backend == "sitl":
+            return "sitl", sitl
+        return "bfcd", bfcd
+
+    @app.get("/api/viewer")
+    async def viewer_status() -> JSONResponse:
+        """Status of the configured Configurator backend. The logs page polls
+        this and shows a single button; which backend it drives is config-only."""
+        name, runner = _viewer()
+        st = runner.status()
+        return JSONResponse({
+            "backend": name,
+            "enabled": runner.available(),
+            "running": st.running, "starting": st.starting,
+            "phase": st.phase, "detail": st.detail,
+            "sent": st.sent, "total": st.total,
+            "version": st.version, "capture_id": st.capture_id,
+            "connect_url": st.connect_url,
+        })
 
     @app.post("/api/shutdown")
     async def shutdown_server() -> JSONResponse:

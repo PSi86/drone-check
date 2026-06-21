@@ -302,6 +302,9 @@ class _FakeSitl:
         self.stopped = False
         self.shut_down = False
 
+    def set_status_listener(self, fn):
+        pass
+
     def start(self, capture_id, version, dump_text):
         from drone_check.sitl import SitlStatus
         self.started = (capture_id, version)
@@ -311,6 +314,9 @@ class _FakeSitl:
     def status(self):
         from drone_check.sitl import SitlStatus
         return SitlStatus(running=False)
+
+    def available(self):
+        return True
 
     def stop(self):
         self.stopped = True
@@ -361,3 +367,88 @@ def test_sitl_stop_route(tmp_path, monkeypatch):
     app = create_app(_config(tmp_path), demo=True)
     with TestClient(app) as client:
         assert client.post("/api/sitl/stop").json()["ok"] is True
+
+
+class _FakeBfcd:
+    """Stand-in for BfcdSession so route tests never touch WSL/the backend."""
+
+    def __init__(self, *_a, **_k):
+        self.started = None
+        self.stopped = False
+        self.shut_down = False
+
+    def set_status_listener(self, fn):
+        pass
+
+    def start(self, dump_text, capture_id="", version=""):
+        from drone_check.bfcd.session import BfcdStatus
+        self.started = (capture_id, version)
+        return BfcdStatus(running=True, version=version, capture_id=capture_id,
+                          connect_url="ws://127.0.0.1:6762")
+
+    def available(self):
+        return True
+
+    def status(self):
+        from drone_check.bfcd.session import BfcdStatus
+        return BfcdStatus(running=False)
+
+    def stop(self):
+        self.stopped = True
+
+    def shutdown(self):
+        self.shut_down = True
+        self.stopped = True
+
+
+def test_bfcd_starts_for_capture(tmp_path, monkeypatch):
+    folder = _seed_capture(tmp_path)
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", _FakeBfcd)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        data = client.post(f"/api/captures/{folder.name}/bfcd").json()
+        assert data["ok"] is True
+        assert data["connect_url"] == "ws://127.0.0.1:6762"
+        assert data["version"] == "4.4.0"
+
+
+def test_bfcd_disabled_in_config(tmp_path, monkeypatch):
+    _seed_capture(tmp_path)
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", _FakeBfcd)
+    cfg = _config(tmp_path)
+    cfg.settings.bfcd_enabled = False
+    app = create_app(cfg, demo=True)
+    with TestClient(app) as client:
+        assert client.post("/api/captures/2026-06-17T10-00-00Z_cap/bfcd").json()["ok"] is False
+
+
+def test_bfcd_status_and_stop_routes(tmp_path, monkeypatch):
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", _FakeBfcd)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        st = client.get("/api/bfcd/status").json()
+        assert st["enabled"] is True and st["running"] is False
+        assert client.post("/api/bfcd/stop").json()["ok"] is True
+
+
+def test_viewer_defaults_to_bfcd(tmp_path, monkeypatch):
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", _FakeBfcd)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        st = client.get("/api/viewer").json()
+        assert st["backend"] == "bfcd" and st["enabled"] is True
+
+
+def test_viewer_selects_sitl_from_config(tmp_path, monkeypatch):
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", _FakeBfcd)
+    cfg = _config(tmp_path)
+    cfg.settings.viewer_backend = "sitl"
+    app = create_app(cfg, demo=True)
+    with TestClient(app) as client:
+        st = client.get("/api/viewer").json()
+        assert st["backend"] == "sitl"

@@ -408,6 +408,21 @@ class SitlRunner:
         # On Windows the SITL Linux binaries run under WSL; on Linux they run
         # natively (no WSL). macOS can't run the Linux ELFs at all.
         self._use_wsl = sys.platform == "win32"
+        # Optional callback invoked with the live SitlStatus on every change, so
+        # the server can push it to browsers over the WebSocket (no polling).
+        self._status_listener = None
+
+    def set_status_listener(self, fn) -> None:
+        """Register a callback invoked with the current status on every change."""
+        self._status_listener = fn
+
+    def _notify(self) -> None:
+        fn = self._status_listener
+        if fn is not None:
+            try:
+                fn(self.status())  # status() locks separately; safe here
+            except Exception:
+                pass
 
     def _progress(self, phase: str, detail: str = "", sent: int = 0,
                   total: int = 0, starting: bool = True,
@@ -424,7 +439,8 @@ class SitlRunner:
             self._sent = sent
             self._total = total
             self._starting = starting
-            return True
+        self._notify()
+        return True
 
     # -- helpers ----------------------------------------------------------
 

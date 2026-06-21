@@ -135,7 +135,28 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let CAPTURES = [];
-    let SITL_ENABLED = true;  // gates the "Im Configurator" button; set from /api/sitl/status
+    // One "View in Configurator" button. Which backend serves it (SITL or the
+    // read-only bf-configd) is decided in config (settings.viewer_backend) and
+    // reported by /api/viewer — never chosen in the UI. Default: bf-configd.
+    let VIEWER_ENABLED = false;
+    let activeBackend = "bfcd";
+    const BACKENDS = {
+      sitl: {
+        label: "SITL",
+        start: (id) => `/api/captures/${encodeURIComponent(id)}/configurator`,
+        status: "/api/sitl/status", stop: "/api/sitl/stop",
+        note: "SITL hat keine echten Motor-Ausgänge: Motor-/Mixer-Tabs zeigen "
+            + "Warnungen (erwartet, ohne Einfluss auf die Inspektion). VTX-Tabelle wird angezeigt.",
+      },
+      bfcd: {
+        label: "bf-configd",
+        start: (id) => `/api/captures/${encodeURIComponent(id)}/bfcd`,
+        status: "/api/bfcd/status", stop: "/api/bfcd/stop",
+        note: "bf-configd ist read-only: jeder Schreibzugriff wird von der Firmware "
+            + "abgelehnt — der Configurator kann alles ansehen, aber nichts ändern. "
+            + "Motor-/Mixer-Tabs zeigen Warnungen (erwartet).",
+      },
+    };
 
     const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
       (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -174,8 +195,9 @@
         : c.firmware_hash_approved === false ? "✗ not approved" : "—";
       const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
       const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
-      const cfgBtn = (SITL_ENABLED && c.has_dump)
-        ? `<button data-cfg="${esc(c.id)}" data-ver="${esc((c.firmware||{}).version||"")}">Im Configurator</button>` : "";
+      const ver = esc((c.firmware || {}).version || "");
+      const viewBtn = (VIEWER_ENABLED && c.has_dump)
+        ? `<button data-view="${esc(c.id)}" data-ver="${ver}">Im Configurator</button>` : "";
       return `<tr>
         <td>${verdictBadge(c)}</td>
         <td class="ts">${esc(c.captured_at || c.id)}</td>
@@ -184,7 +206,7 @@
         <td>${esc(fwTxt)}${git}</td>
         <td>${hash}${hashSrc}</td>
         <td><div class="actions">
-          <button data-open="${esc(c.id)}">Ordner öffnen</button>${cfgBtn}
+          <button data-open="${esc(c.id)}">Ordner öffnen</button>${viewBtn}
         </div></td>
       </tr>`;
     }
@@ -197,8 +219,9 @@
       $("rows").querySelectorAll("button[data-open]").forEach((b) => {
         b.onclick = () => openFolder(b.getAttribute("data-open"), b);
       });
-      $("rows").querySelectorAll("button[data-cfg]").forEach((b) => {
-        b.onclick = () => openConfigurator(b.getAttribute("data-cfg"), b.getAttribute("data-ver"), b);
+      $("rows").querySelectorAll("button[data-view]").forEach((b) => {
+        b.onclick = () => openViewer(
+          b.getAttribute("data-view"), b.getAttribute("data-ver"), b, activeBackend);
       });
     }
 
@@ -219,32 +242,29 @@
     }
 
     const PHASE_LABELS = {
-      checking: "Prüfe WSL & SITL-Binary…",
-      starting: "Starte SITL (Ladephase)…",
+      checking: "Prüfe Umgebung & Binary…",
+      starting: "Starte (Ladephase)…",
       loading: "Lade Konfiguration",
-      saving: "Speichere & starte SITL neu…",
-      starting2: "Starte SITL aus gespeicherter Konfiguration…",
+      saving: "Speichere & starte neu…",
+      starting2: "Starte aus gespeicherter Konfiguration…",
       proxy: "Starte Configurator-Proxy…",
+      settling: "Warte auf Verbindungsbereitschaft…",
       ready: "Bereit",
     };
-    let sitlPoll = null;
-
-    function renderSitl(st) {
+    // One shared footer bar renders whichever backend (SITL or bf-configd) is
+    // active. It is driven by "viewer" events pushed over the WebSocket — no
+    // polling, so a backgrounded tab can't throttle a phase away.
+    function renderViewer(st, backend) {
+      backend = backend || activeBackend;
+      const cfg = BACKENDS[backend] || {};
+      const label = cfg.label || "Backend";
       const bar = $("sitlBar"), prog = $("sitlProg"), fill = $("sitlProgFill"), stop = $("sitlStop");
-      if (st && st.running) {
-        stopPolling();
-        $("sitlTitle").textContent = `SITL läuft — Firmware ${st.version || "?"}`
-          + (st.capture_id ? `  ·  ${st.capture_id}` : "");
-        $("sitlUrl").textContent = st.connect_url || "";
-        $("sitlConnect").classList.remove("hidden");
-        $("sitlOpen").classList.remove("hidden");
-        $("sitlNote").classList.remove("hidden");
-        prog.classList.add("hidden");
-        stop.textContent = "SITL stoppen"; stop.disabled = false;
-        bar.classList.remove("hidden");
-      } else if (st && st.stopping) {
-        // Local-only transient while we wait for /api/sitl/stop to return.
-        $("sitlTitle").textContent = "Stoppe SITL…";
+      // Order matters: while starting (even though the backend process may already
+      // be alive, so running is also true during the settle/proxy phases) we want
+      // the progress label, not the "running" bar. Hence starting is checked first.
+      if (st && st.stopping) {
+        // Local-only transient while we wait for the stop request to return.
+        $("sitlTitle").textContent = `Stoppe ${label}…`;
         $("sitlConnect").classList.add("hidden");
         $("sitlOpen").classList.add("hidden");
         $("sitlNote").classList.add("hidden");
@@ -252,10 +272,10 @@
         stop.textContent = "Stoppe…"; stop.disabled = true;
         bar.classList.remove("hidden");
       } else if (st && st.starting) {
-        let label = PHASE_LABELS[st.phase] || "Starte SITL…";
-        if (st.phase === "loading" && st.total) label += ` ${st.sent}/${st.total}`;
-        // Name the capture so it is clear what "Abbrechen" would cancel.
-        $("sitlTitle").textContent = (st.capture_id ? `${st.capture_id} — ` : "") + label;
+        let lbl = PHASE_LABELS[st.phase] || `Starte ${label}…`;
+        if (st.phase === "loading" && st.total) lbl += ` ${st.sent}/${st.total}`;
+        // Name the backend + capture so it is clear what "Abbrechen" would cancel.
+        $("sitlTitle").textContent = `${label}` + (st.capture_id ? ` · ${st.capture_id}` : "") + " — " + lbl;
         $("sitlConnect").classList.add("hidden");
         $("sitlOpen").classList.add("hidden");
         $("sitlNote").classList.add("hidden");
@@ -268,87 +288,119 @@
         }
         stop.textContent = "Start abbrechen"; stop.disabled = false;
         bar.classList.remove("hidden");
+      } else if (st && st.running) {
+        $("sitlTitle").textContent = `${label} läuft — Firmware ${st.version || "?"}`
+          + (st.capture_id ? `  ·  ${st.capture_id}` : "");
+        $("sitlUrl").textContent = st.connect_url || "";
+        $("sitlNote").textContent = cfg.note || "";
+        $("sitlConnect").classList.remove("hidden");
+        $("sitlOpen").classList.remove("hidden");
+        $("sitlNote").classList.remove("hidden");
+        prog.classList.add("hidden");
+        stop.textContent = `${label} stoppen`; stop.disabled = false;
+        bar.classList.remove("hidden");
       } else {
-        stopPolling();
         bar.classList.add("hidden");
       }
     }
 
-    function startPolling() {
-      if (sitlPoll) return;
-      sitlPoll = setInterval(async () => {
-        try {
-          const st = await (await fetch("/api/sitl/status")).json();
-          if (st.running || st.starting) renderSitl(st);
-        } catch (e) {}
-      }, 400);
-    }
-    function stopPolling() { if (sitlPoll) { clearInterval(sitlPoll); sitlPoll = null; } }
-
     // Epoch guard: a stop() (or a new open) bumps this so a slow, now-obsolete
     // start response can't re-show the bar after the user already stopped.
-    let sitlEpoch = 0;
+    let viewerEpoch = 0;
+    // True while the user is intentionally stopping, so a late running/starting
+    // event (race with teardown) can't re-show the bar.
+    let viewerStopping = false;
 
-    async function openConfigurator(id, ver, btn) {
+    // Live viewer status over the WebSocket (pushed by the server on every phase
+    // change). This replaces polling, so phases are never missed when the tab is
+    // backgrounded — the browser delivers each message as it arrives.
+    function onViewerEvent(ev) {
+      if (viewerStopping && (ev.running || ev.starting)) return;
+      activeBackend = ev.backend || activeBackend;
+      renderViewer(ev, activeBackend);
+    }
+    function connectViewerWs() {
+      const ws = new WebSocket((location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/ws");
+      ws.onopen = () => setInterval(() => ws.readyState === 1 && ws.send("ping"), 15000);
+      ws.onmessage = (m) => {
+        try { const e = JSON.parse(m.data); if (e.type === "viewer") onViewerEvent(e); } catch (err) {}
+      };
+      ws.onclose = () => setTimeout(connectViewerWs, 2000);
+    }
+    connectViewerWs();
+
+    async function openViewer(id, ver, btn, backend) {
+      const cfg = BACKENDS[backend];
+      if (!cfg) return;
+      // SITL and bf-configd share a TCP port, so stop the other one first.
+      const other = backend === "sitl" ? "bfcd" : "sitl";
+      try { await fetch(BACKENDS[other].stop, { method: "POST" }); } catch (e) {}
+      activeBackend = backend;
+      viewerStopping = false;
       const prev = btn.textContent;
-      const epoch = ++sitlEpoch;
-      btn.disabled = true; btn.textContent = "Starte SITL…";
-      renderSitl({ starting: true, phase: "checking" });
-      startPolling();
+      const epoch = ++viewerEpoch;
+      btn.disabled = true; btn.textContent = `Starte ${cfg.label}…`;
+      // Immediate feedback; the WebSocket then drives every phase live.
+      renderViewer({ starting: true, phase: "checking", capture_id: id }, backend);
       try {
-        const r = await fetch(`/api/captures/${encodeURIComponent(id)}/configurator`, { method: "POST" });
+        const r = await fetch(cfg.start(id), { method: "POST" });
         const d = await r.json().catch(() => ({}));
-        if (epoch !== sitlEpoch) return;  // superseded by a stop / newer open
-        stopPolling();
+        if (epoch !== viewerEpoch) return;  // superseded by a stop / newer open
         if (d.ok) {
-          renderSitl({ running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url });
+          // The WS has shown the phases; ensure the final running state (with the
+          // connect URL) is shown even if a WS message was missed.
+          renderViewer({ running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url }, backend);
         } else if (d.cancelled) {
-          renderSitl({ running: false });  // we asked it to stop — no error
+          // a stop / newer open already updated the bar
         } else {
-          renderSitl({ running: false });
-          alert("SITL konnte nicht gestartet werden:\n" + (d.reason || r.status));
+          renderViewer({ running: false }, backend);
+          const tip = backend === "bfcd"
+            ? "\n\nTipp: „Im Configurator“ (SITL) funktioniert auch für Dumps, die bf-configd (noch) nicht unterstützt." : "";
+          alert(`${cfg.label} konnte nicht gestartet werden:\n` + (d.reason || r.status) + tip);
         }
       } catch (e) {
-        if (epoch !== sitlEpoch) return;
-        stopPolling(); renderSitl({ running: false });
-        alert("Fehler beim Starten von SITL: " + e);
+        if (epoch !== viewerEpoch) return;
+        renderViewer({ running: false }, backend);
+        alert(`Fehler beim Starten von ${cfg.label}: ` + e);
       } finally {
         btn.disabled = false; btn.textContent = prev;
       }
     }
 
-    async function stopSitl() {
-      sitlEpoch++;  // invalidate any in-flight open response
-      stopPolling();
-      renderSitl({ stopping: true });
-      try { await fetch("/api/sitl/stop", { method: "POST" }); } catch (e) {}
-      // Reflect the real post-stop state rather than assuming, so the bar can
-      // never get wedged on "Stoppe…" if anything unexpected happened.
+    async function stopViewer() {
+      viewerEpoch++;  // invalidate any in-flight open response
+      viewerStopping = true;
+      const cfg = BACKENDS[activeBackend];
+      renderViewer({ stopping: true }, activeBackend);
+      // The server pushes the idle "viewer" event over the WebSocket when teardown
+      // finishes, which hides the bar. Await the request, then reflect the real
+      // state once as a fallback in case the WebSocket is down.
+      try { await fetch(cfg.stop, { method: "POST" }); } catch (e) {}
       try {
-        const st = await (await fetch("/api/sitl/status")).json();
-        renderSitl(st);
-      } catch (e) { renderSitl({ running: false }); }
+        const st = await (await fetch(cfg.status)).json();
+        renderViewer(st, activeBackend);
+      } catch (e) { renderViewer({ running: false }, activeBackend); }
+      viewerStopping = false;
     }
-    $("sitlStop").onclick = stopSitl;
+    $("sitlStop").onclick = stopViewer;
 
     async function load() {
       const r = await fetch("/api/captures");
       const data = await r.json().catch(() => ({ captures: [] }));
       CAPTURES = data.captures || [];
-      // Learn whether the Configurator/SITL feature is enabled (and reflect any
-      // already-running session) BEFORE rendering, so the button is only shown
-      // when the feature is on.
-      try {
-        const st = await (await fetch("/api/sitl/status")).json();
-        SITL_ENABLED = st.enabled !== false;
-        fillVariants();
-        render();
-        renderSitl(st);
-        if (st.starting) startPolling();
-      } catch (e) {
-        fillVariants();
-        render();
+      // Learn which backend config selected (and whether it is available, and
+      // any already-running session) BEFORE rendering — the one button is only
+      // shown when the configured backend is on. Live updates then arrive over
+      // the WebSocket (connectViewerWs).
+      let st = null;
+      try { st = await (await fetch("/api/viewer")).json(); } catch (e) {}
+      if (st) {
+        activeBackend = st.backend || activeBackend;
+        VIEWER_ENABLED = !!st.enabled;
       }
+      fillVariants();
+      render();
+      if (st && (st.running || st.starting)) renderViewer(st, activeBackend);
     }
 
     async function shutdownServer() {

@@ -8,3 +8,8 @@ debug/
 .pytest_cache/
 build/
 dist/
+
+# Pre-built SITL / bf-configd binaries and their distribution bundles are large
+# and platform-specific — shipped as GitHub release assets, never committed.
+*.elf
+*-bundle*.tar.gz

@@ -178,7 +178,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from .server import create_app
 
     config = load_config(args.config)
-    app = create_app(config, demo=args.demo)
+    app = create_app(config, demo=args.demo, config_dir=args.config)
     # Several clean ways to stop, all triggering uvicorn's graceful shutdown (which
     # runs the app lifespan shutdown — ending any SITL session and terminating the
     # WSL distro we started): Ctrl+C, pressing Enter here, or the "Server beenden"
@@ -341,6 +341,127 @@ def cmd_sitl_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bfcd_plan(args: argparse.Namespace) -> int:
+    """Show what bf-configd would do for a dump: metadata + backend selection.
+
+    Hardware-free: reads a ``dump all`` file, detects its firmware family /
+    target / MSP API, and reports which backend would serve it and at what
+    confidence — without launching anything.
+    """
+    from .bfcd.session import BfcdError, BfcdSession
+
+    config = load_config(args.config)
+    dump_text = Path(args.dump).read_text(encoding="utf-8", errors="replace")
+    session = BfcdSession(config.settings, args.config)
+    try:
+        plan = session.prepare(dump_text)
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    md, sel = plan.metadata, plan.selection
+    print("== dump metadata ==")
+    for k in ("firmware_name", "version", "firmware_family", "target",
+              "board_name", "manufacturer_id", "msp_api", "git_hash"):
+        print(f"  {k:16}: {getattr(md, k) or '-'}")
+    print("== backend selection ==")
+    print(f"  status          : {sel.status.value}")
+    print(f"  backend         : {sel.backend or '-'}")
+    print(f"  target context  : {sel.target_context}")
+    print(f"  app compat      : {sel.app_compat or '-'}")
+    print(f"  binary present  : {'yes' if plan.binary_available else 'no'}")
+    print(f"  binary path     : {plan.binary_path}")
+    if sel.warnings:
+        print("== warnings ==")
+        for w in sel.warnings:
+            print(f"  - {w}")
+    return 0
+
+
+def cmd_bfcd_serve(args: argparse.Namespace) -> int:
+    """Load a dump into the native bf-configd backend and serve it over MSP.
+
+    Two-phase like SITL; prints the ``ws://`` URL for the Betaflight web
+    Configurator (manual connection) and runs until Enter is pressed.
+    """
+    from .bfcd.session import BfcdError, BfcdSession
+
+    config = load_config(args.config)
+    dump_text = Path(args.dump).read_text(encoding="utf-8", errors="replace")
+    session = BfcdSession(config.settings, args.config)
+    try:
+        status = session.start(dump_text)
+    except BfcdError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        return 1
+    print(f"\nbf-configd ready. Connect the Betaflight Configurator (manual "
+          f"connection) to: {status.connect_url}")
+    print("Press Enter to stop.")
+    try:
+        sys.stdin.readline()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        session.stop()
+        print("bf-configd stopped.", file=sys.stderr)
+    return 0
+
+
+def _bfcd_session(args: argparse.Namespace):
+    from .bfcd.session import BfcdSession
+
+    return BfcdSession(load_config(args.config).settings, args.config)
+
+
+def cmd_bfcd_list(args: argparse.Namespace) -> int:
+    """List the bf-configd backends cached (and whether they are portable)."""
+    from .bfcd.session import BfcdError
+
+    try:
+        items = _bfcd_session(args).list_cache()
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    if not items:
+        print("No bf-configd binaries cached. Build them with scripts/build_bfcd.sh, "
+              "or install a bundle with `drone-check bfcd install`.")
+        return 0
+    total = 0
+    for it in sorted(items, key=lambda x: x["family"]):
+        total += it["bytes"]
+        note = "static" if it["static"] else "DYNAMIC (not portable - rebuild)"
+        print(f"  {it['family']:14} {it['bytes']:>8} B  {note}")
+    print(f"{len(items)} family/-ies, {total} bytes total")
+    return 0
+
+
+def cmd_bfcd_package(args: argparse.Namespace) -> int:
+    """Bundle cached bf-configd binaries into a portable archive for distribution."""
+    from .bfcd.session import BfcdError
+
+    try:
+        out = _bfcd_session(args).package_cache(
+            str(Path(args.output).resolve()), args.families or [])
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(out)
+    return 0
+
+
+def cmd_bfcd_install(args: argparse.Namespace) -> int:
+    """Install a bundle (from `bfcd package`) into the bf-configd cache."""
+    from .bfcd.session import BfcdError
+
+    try:
+        families = _bfcd_session(args).install_bundle(str(Path(args.bundle).resolve()))
+    except BfcdError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Installed {len(families)} bf-configd binary/-ies: {', '.join(families)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="drone-check")
     parser.add_argument(
@@ -390,6 +511,34 @@ def main(argv: list[str] | None = None) -> int:
         "install", help="install a bundle (from `sitl package`) into the WSL cache")
     p_si.add_argument("bundle", help="bundle archive to install")
     p_si.set_defaults(func=cmd_sitl_install)
+
+    p_bfcd = sub.add_parser(
+        "bfcd", help="bf-configd snapshot emulator (dump -> Configurator over MSP)")
+    bfcd_sub = p_bfcd.add_subparsers(dest="bfcd_command", required=True)
+    p_bp = bfcd_sub.add_parser(
+        "plan", help="show metadata + backend selection for a dump (no hardware)")
+    p_bp.add_argument("dump", help="path to a `dump all` text file")
+    p_bp.set_defaults(func=cmd_bfcd_plan)
+
+    p_bs = bfcd_sub.add_parser(
+        "serve", help="load a dump into the native backend and serve it over MSP")
+    p_bs.add_argument("dump", help="path to a `dump all` text file")
+    p_bs.set_defaults(func=cmd_bfcd_serve)
+
+    p_bl = bfcd_sub.add_parser("list", help="list bf-configd binaries in the cache")
+    p_bl.set_defaults(func=cmd_bfcd_list)
+
+    p_bpk = bfcd_sub.add_parser(
+        "package", help="bundle cached binaries into a portable archive")
+    p_bpk.add_argument("output", help="output archive path, e.g. bfcd-bundle.tar.gz")
+    p_bpk.add_argument("families", nargs="*",
+                       help="families to include (default: all cached)")
+    p_bpk.set_defaults(func=cmd_bfcd_package)
+
+    p_bi = bfcd_sub.add_parser(
+        "install", help="install a bundle (from `bfcd package`) into the cache")
+    p_bi.add_argument("bundle", help="bundle archive to install")
+    p_bi.set_defaults(func=cmd_bfcd_install)
 
     args = parser.parse_args(argv)
     return args.func(args)

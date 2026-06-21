@@ -60,16 +60,19 @@ Configurator** via a version-matched SITL instance — see
 
 From the repository root, run the guided installer for your OS — it checks
 Python, creates the `.venv`, installs drone-check, and **asks** whether you also
-want the "View in Configurator" (SITL) feature, installing the pre-built binaries
-from a bundle if you opt in.
+want the "View in Configurator" feature. If you opt in it downloads the pre-built
+binary bundles (bf-configd — the read-only default — and SITL) from the project's
+`binaries` GitHub release, so no toolchain is needed. (The download uses the
+GitHub CLI `gh`, as the repo is private; install/authenticate `gh` first, or pass
+a local bundle with `--bfcd-bundle` / `--sitl-bundle`.)
 
 ```powershell
-# Windows (sets up WSL-based SITL if you opt in)
+# Windows (binaries run under WSL)
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
 ```bash
-# Linux / macOS (SITL runs natively on Linux; not available on macOS)
+# Linux / macOS (binaries run natively on Linux; not available on macOS)
 bash scripts/install.sh
 ```
 
@@ -77,12 +80,12 @@ Unattended variants (same idea on both):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -NoSitl
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Sitl -SitlBundle C:\path\sitl-bundle.tar.gz
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Sitl -BfcdBundle C:\path\bfcd-bundle.tar.gz
 ```
 
 ```bash
 bash scripts/install.sh --no-sitl
-bash scripts/install.sh --sitl --sitl-bundle /path/sitl-bundle.tar.gz
+bash scripts/install.sh --sitl --bfcd-bundle /path/bfcd-bundle.tar.gz
 ```
 
 Start it afterwards with `drone-check serve` (or `.\.venv\Scripts\drone-check.exe
@@ -215,6 +218,30 @@ Configurator (manual connection) to `ws://127.0.0.1:6761`.
 
 See **[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)** for the full guide: setup,
 how it works, the VTX config patch, caching, configuration and troubleshooting.
+
+### bf-configd (experimental)
+
+**bf-configd** is a read-only alternative to SITL for the same view: it serves a
+`dump all` to the Configurator over MSP using a backend built from official
+Betaflight source with a firmware-enforced **read-only guard** — every MSP write
+is refused, so an inspector can view everything but nothing can be changed or
+persisted. It is the **default** backend for *Im Configurator* and works for the
+Betaflight 4.4, 4.5 and 2025.12 families (Linux/WSL).
+
+The `/logs` page has a single *Im Configurator* button per capture; which backend
+serves it is a config choice — `viewer_backend: bfcd` (default) or `sitl` in
+`settings.yaml`. Build the backend(s) once (inside WSL/Linux):
+
+```powershell
+bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2   # build into the cache
+# then on /logs, click "Im Configurator" on a capture -> ws://127.0.0.1:6762
+
+# or from the CLI, no UI:
+.\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>    # selection only
+.\.venv\Scripts\python.exe -m drone_check bfcd serve <dump.txt>   # run + serve
+```
+
+See **[bf-configd/README.md](bf-configd/README.md)** and **[docs/bfcd/](docs/bfcd/)**.
 
 ## Output
 

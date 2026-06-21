@@ -1,0 +1,55 @@
+# Golden-test comparison masks for MSP responses (bf-configd vs SITL).
+#
+# Most config-derived commands must match SITL byte-for-byte (compare: exact).
+# Commands that carry runtime/dynamic fields (uptime, CPU load, sensor/arming
+# flags, battery runtime) cannot, so they use compare: masked and list the byte
+# ranges to blank before comparing, as half-open [start, end) offsets into the
+# MSP *payload* (the bytes after size+cmd, before the CRC).
+#
+# Offsets follow Betaflight's msp.c response layout for the relevant API; revisit
+# per firmware family when adding it to the matrix.
+
+MSP_API_VERSION:
+  compare: exact
+MSP_FC_VARIANT:
+  compare: exact
+MSP_FC_VERSION:
+  compare: exact
+MSP_BUILD_INFO:
+  compare: exact
+MSP_NAME:
+  compare: exact
+MSP_FEATURE_CONFIG:
+  compare: exact
+
+MSP_BOARD_INFO:
+  compare: masked
+  # Trailing capability/sensor-flag bytes are runtime-derived; the leading board
+  # identity is stable. Range refined when 4.5 is wired into golden tests.
+  ignore_bytes:
+    - [9, 64]
+
+MSP_STATUS:
+  compare: masked
+  # cycleTime(0..2), i2cErrorCount(2..4) and the arming-disable flags tail vary
+  # between processes; the sensor/flightModeFlags in between are config-derived.
+  ignore_bytes:
+    - [0, 4]
+    - [15, 64]
+
+MSP_STATUS_EX:
+  compare: masked
+  ignore_bytes:
+    - [0, 4]
+    - [15, 64]
+
+MSP_BATTERY_STATE:
+  compare: masked
+  # Live voltage/current/mAh drawn — fully synthetic in snapshot mode.
+  ignore_bytes:
+    - [0, 64]
+
+MSP_MOTOR:
+  compare: masked
+  ignore_bytes:
+    - [0, 64]
