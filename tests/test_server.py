@@ -241,13 +241,13 @@ def test_operator_pilot_enabled_sets_fallback(tmp_path):
         assert data["ok"] is True and data["operator_pilot"] == "Bob"
 
 
-def _seed_capture(base, name="2026-06-17T10-00-00Z_cap", passed=True):
+def _seed_capture(base, name="2026-06-17T10-00-00Z_cap", passed=True, variant="BTFL"):
     folder = base / name
     (folder / "raw").mkdir(parents=True)
     (folder / "snapshot.json").write_text(json.dumps({
         "captured_at": "2026-06-17T10-00-00Z", "uid": "abc",
         "pilot_name": "Ada", "craft_name": "Quad",
-        "firmware": {"variant": "BTFL", "version": "4.4.0", "git_hash": "deadbeef"},
+        "firmware": {"variant": variant, "version": "4.4.0", "git_hash": "deadbeef"},
         "firmware_hash_approved": True, "firmware_hash_source": "github",
     }), encoding="utf-8")
     (folder / "evaluation.json").write_text(json.dumps({"passed": passed}), encoding="utf-8")
@@ -336,6 +336,36 @@ def test_configurator_starts_sitl_for_capture(tmp_path, monkeypatch):
         assert data["ok"] is True
         assert data["connect_url"] == "ws://127.0.0.1:6761"
         assert data["version"] == "4.4.0"
+
+
+def test_configurator_rejects_non_betaflight_variant(tmp_path, monkeypatch):
+    """An INAV (or other non-Betaflight) capture is refused up front with a clear
+    reason — the viewer backends are Betaflight-only, so SITL must not be started
+    (it would otherwise fail with a misleading "no SITL binary" message)."""
+    folder = _seed_capture(tmp_path, variant="INAV")
+    fake = _FakeSitl()
+    monkeypatch.setattr("drone_check.server.SitlRunner", lambda *a, **k: fake)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        data = client.post(f"/api/captures/{folder.name}/configurator").json()
+        assert data["ok"] is False
+        assert data["unsupported_variant"] == "INAV"
+        assert "Betaflight" in data["reason"]
+    assert fake.started is None  # SITL never touched for an unsupported variant
+
+
+def test_bfcd_rejects_non_betaflight_variant(tmp_path, monkeypatch):
+    folder = _seed_capture(tmp_path, variant="INAV")
+    fake = _FakeBfcd()
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", lambda *a, **k: fake)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        data = client.post(f"/api/captures/{folder.name}/bfcd").json()
+        assert data["ok"] is False
+        assert data["unsupported_variant"] == "INAV"
+        assert "Betaflight" in data["reason"]
+    assert fake.started is None
 
 
 def test_configurator_disabled_in_config(tmp_path, monkeypatch):

@@ -91,45 +91,45 @@
       <a href="/logs" class="active">Logs</a>
     </nav>
     <span class="count" id="count"></span>
-    <button id="shutdownBtn" class="shutdown" title="drone-check-Server beenden">Server beenden</button>
+    <button id="shutdownBtn" class="shutdown" title="Shut down the drone-check server">Shut down server</button>
   </header>
 
   <main>
     <div class="filters">
-      <input type="search" id="q" placeholder="Suche: Pilot, Craft, UID, Version, Ordner…" />
+      <input type="search" id="q" placeholder="Search: pilot, craft, UID, version, folder…" />
       <select id="verdict">
-        <option value="all">Alle Ergebnisse</option>
-        <option value="pass">Bestanden (PASS)</option>
-        <option value="fail">Durchgefallen (FAIL)</option>
-        <option value="unknown">Ohne Ergebnis</option>
+        <option value="all">All results</option>
+        <option value="pass">Passed (PASS)</option>
+        <option value="fail">Failed (FAIL)</option>
+        <option value="unknown">No result</option>
       </select>
-      <select id="variant"><option value="all">Alle Firmware</option></select>
-      <button id="refresh">Aktualisieren</button>
+      <select id="variant"><option value="all">All firmware</option></select>
+      <button id="refresh">Refresh</button>
     </div>
 
     <table>
       <thead>
         <tr>
-          <th>Ergebnis</th><th>Zeitpunkt</th><th>Pilot / Craft</th>
+          <th>Result</th><th>Time</th><th>Pilot / Craft</th>
           <th>Firmware</th><th>Hash</th><th></th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
-    <div class="empty hidden" id="empty">Keine Logs gefunden.</div>
+    <div class="empty hidden" id="empty">No logs found.</div>
   </main>
 
   <div class="sitl hidden" id="sitlBar">
     <div class="grow">
       <div class="title" id="sitlTitle"></div>
-      <div class="note" id="sitlNote">SITL hat keine echten Motor-Ausgänge: Motor-/Mixer-Tabs
-        zeigen Warnungen (erwartet, ohne Einfluss auf die Inspektion). VTX-Tabelle wird angezeigt.</div>
+      <div class="note" id="sitlNote">SITL has no real motor outputs: the motor/mixer tabs
+        show warnings (expected, with no effect on the inspection). The VTX table is shown.</div>
       <div class="bar hidden" id="sitlProg"><div class="fill" id="sitlProgFill"></div></div>
     </div>
-    <div id="sitlConnect" class="hidden">Verbinden im Configurator (Manual):
+    <div id="sitlConnect" class="hidden">Connect in the Configurator (Manual):
       <span class="url" id="sitlUrl"></span></div>
-    <a class="cfg-link hidden" id="sitlOpen" href="https://app.betaflight.com/" target="_blank" rel="noopener">Configurator öffnen</a>
-    <button id="sitlStop">Abbrechen</button>
+    <a class="cfg-link hidden" id="sitlOpen" href="https://app.betaflight.com/" target="_blank" rel="noopener">Open Configurator</a>
+    <button id="sitlStop">Cancel</button>
   </div>
 
   <script>
@@ -145,16 +145,16 @@
         label: "SITL",
         start: (id) => `/api/captures/${encodeURIComponent(id)}/configurator`,
         status: "/api/sitl/status", stop: "/api/sitl/stop",
-        note: "SITL hat keine echten Motor-Ausgänge: Motor-/Mixer-Tabs zeigen "
-            + "Warnungen (erwartet, ohne Einfluss auf die Inspektion). VTX-Tabelle wird angezeigt.",
+        note: "SITL has no real motor outputs: the motor/mixer tabs show "
+            + "warnings (expected, with no effect on the inspection). The VTX table is shown.",
       },
       bfcd: {
         label: "bf-configd",
         start: (id) => `/api/captures/${encodeURIComponent(id)}/bfcd`,
         status: "/api/bfcd/status", stop: "/api/bfcd/stop",
-        note: "bf-configd ist read-only: jeder Schreibzugriff wird von der Firmware "
-            + "abgelehnt — der Configurator kann alles ansehen, aber nichts ändern. "
-            + "Motor-/Mixer-Tabs zeigen Warnungen (erwartet).",
+        note: "bf-configd is read-only: every write is refused by the firmware — "
+            + "the Configurator can view everything but change nothing. "
+            + "The motor/mixer tabs show warnings (expected).",
       },
     };
 
@@ -194,10 +194,19 @@
       const hash = c.firmware_hash_approved === true ? "✓ approved"
         : c.firmware_hash_approved === false ? "✗ not approved" : "—";
       const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
-      const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
+      const warn = c.readable === false ? ' <span class="sub">⚠ unreadable</span>' : "";
       const ver = esc((c.firmware || {}).version || "");
-      const viewBtn = (VIEWER_ENABLED && c.has_dump)
-        ? `<button data-view="${esc(c.id)}" data-ver="${ver}">Im Configurator</button>` : "";
+      // Both Configurator backends (SITL and bf-configd) are Betaflight-only, so
+      // a non-Betaflight capture (e.g. INAV) can't be served. The button is simply
+      // disabled (with an explaining tooltip) instead of failing with a pop-up.
+      const variant = (c.firmware || {}).variant || "";
+      const cfgSupported = !variant || variant === "BTFL";
+      let viewBtn = "";
+      if (VIEWER_ENABLED && c.has_dump) {
+        viewBtn = cfgSupported
+          ? `<button data-view="${esc(c.id)}" data-ver="${ver}">Configurator</button>`
+          : `<button disabled title="Configurator view supports Betaflight only – ${esc(variant)} is not supported.">Configurator</button>`;
+      }
       return `<tr>
         <td>${verdictBadge(c)}</td>
         <td class="ts">${esc(c.captured_at || c.id)}</td>
@@ -206,7 +215,7 @@
         <td>${esc(fwTxt)}${git}</td>
         <td>${hash}${hashSrc}</td>
         <td><div class="actions">
-          <button data-open="${esc(c.id)}">Ordner öffnen</button>${viewBtn}
+          <button data-open="${esc(c.id)}">Open folder</button>${viewBtn}
         </div></td>
       </tr>`;
     }
@@ -229,7 +238,7 @@
       const variants = [...new Set(CAPTURES
         .map((c) => c.firmware && c.firmware.variant).filter(Boolean))].sort();
       const sel = $("variant");
-      sel.innerHTML = '<option value="all">Alle Firmware</option>'
+      sel.innerHTML = '<option value="all">All firmware</option>'
         + variants.map((v) => `<option value="${esc(v)}">${esc(v)}</option>`).join("");
     }
 
@@ -237,19 +246,19 @@
       btn.disabled = true;
       try {
         const r = await fetch(`/api/captures/${encodeURIComponent(id)}/open-folder`, { method: "POST" });
-        if (!r.ok) { const d = await r.json().catch(() => ({})); alert("Konnte Ordner nicht öffnen: " + (d.reason || r.status)); }
+        if (!r.ok) { const d = await r.json().catch(() => ({})); alert("Could not open folder: " + (d.reason || r.status)); }
       } finally { btn.disabled = false; }
     }
 
     const PHASE_LABELS = {
-      checking: "Prüfe Umgebung & Binary…",
-      starting: "Starte (Ladephase)…",
-      loading: "Lade Konfiguration",
-      saving: "Speichere & starte neu…",
-      starting2: "Starte aus gespeicherter Konfiguration…",
-      proxy: "Starte Configurator-Proxy…",
-      settling: "Warte auf Verbindungsbereitschaft…",
-      ready: "Bereit",
+      checking: "Checking environment & binary…",
+      starting: "Starting (load phase)…",
+      loading: "Loading configuration",
+      saving: "Saving & rebooting…",
+      starting2: "Starting from saved configuration…",
+      proxy: "Starting Configurator proxy…",
+      settling: "Waiting for connection readiness…",
+      ready: "Ready",
     };
     // One shared footer bar renders whichever backend (SITL or bf-configd) is
     // active. It is driven by "viewer" events pushed over the WebSocket — no
@@ -264,17 +273,17 @@
       // the progress label, not the "running" bar. Hence starting is checked first.
       if (st && st.stopping) {
         // Local-only transient while we wait for the stop request to return.
-        $("sitlTitle").textContent = `Stoppe ${label}…`;
+        $("sitlTitle").textContent = `Stopping ${label}…`;
         $("sitlConnect").classList.add("hidden");
         $("sitlOpen").classList.add("hidden");
         $("sitlNote").classList.add("hidden");
         prog.classList.remove("hidden"); prog.classList.add("indet"); fill.style.width = "";
-        stop.textContent = "Stoppe…"; stop.disabled = true;
+        stop.textContent = "Stopping…"; stop.disabled = true;
         bar.classList.remove("hidden");
       } else if (st && st.starting) {
-        let lbl = PHASE_LABELS[st.phase] || `Starte ${label}…`;
+        let lbl = PHASE_LABELS[st.phase] || `Starting ${label}…`;
         if (st.phase === "loading" && st.total) lbl += ` ${st.sent}/${st.total}`;
-        // Name the backend + capture so it is clear what "Abbrechen" would cancel.
+        // Name the backend + capture so it is clear what "Cancel" would cancel.
         $("sitlTitle").textContent = `${label}` + (st.capture_id ? ` · ${st.capture_id}` : "") + " — " + lbl;
         $("sitlConnect").classList.add("hidden");
         $("sitlOpen").classList.add("hidden");
@@ -286,10 +295,10 @@
         } else {
           prog.classList.add("indet"); fill.style.width = "";
         }
-        stop.textContent = "Start abbrechen"; stop.disabled = false;
+        stop.textContent = "Cancel start"; stop.disabled = false;
         bar.classList.remove("hidden");
       } else if (st && st.running) {
-        $("sitlTitle").textContent = `${label} läuft — Firmware ${st.version || "?"}`
+        $("sitlTitle").textContent = `${label} running — firmware ${st.version || "?"}`
           + (st.capture_id ? `  ·  ${st.capture_id}` : "");
         $("sitlUrl").textContent = st.connect_url || "";
         $("sitlNote").textContent = cfg.note || "";
@@ -297,11 +306,17 @@
         $("sitlOpen").classList.remove("hidden");
         $("sitlNote").classList.remove("hidden");
         prog.classList.add("hidden");
-        stop.textContent = `${label} stoppen`; stop.disabled = false;
+        stop.textContent = `Stop ${label}`; stop.disabled = false;
         bar.classList.remove("hidden");
       } else {
         bar.classList.add("hidden");
       }
+      // The footer bar is position:fixed, so it overlaps the page content and
+      // would hide the last log row. Reserve exactly its current height as the
+      // body's bottom padding while it is visible (the height varies by phase),
+      // and release it again once the bar is hidden.
+      const open = !bar.classList.contains("hidden");
+      document.body.style.paddingBottom = open ? (bar.offsetHeight + 16) + "px" : "";
     }
 
     // Epoch guard: a stop() (or a new open) bumps this so a slow, now-obsolete
@@ -339,7 +354,7 @@
       viewerStopping = false;
       const prev = btn.textContent;
       const epoch = ++viewerEpoch;
-      btn.disabled = true; btn.textContent = `Starte ${cfg.label}…`;
+      btn.disabled = true; btn.textContent = `Starting ${cfg.label}…`;
       // Immediate feedback; the WebSocket then drives every phase live.
       renderViewer({ starting: true, phase: "checking", capture_id: id }, backend);
       try {
@@ -355,13 +370,13 @@
         } else {
           renderViewer({ running: false }, backend);
           const tip = backend === "bfcd"
-            ? "\n\nTipp: „Im Configurator“ (SITL) funktioniert auch für Dumps, die bf-configd (noch) nicht unterstützt." : "";
-          alert(`${cfg.label} konnte nicht gestartet werden:\n` + (d.reason || r.status) + tip);
+            ? "\n\nTip: the SITL backend can also serve dumps that bf-configd doesn't support (yet)." : "";
+          alert(`${cfg.label} could not be started:\n` + (d.reason || r.status) + tip);
         }
       } catch (e) {
         if (epoch !== viewerEpoch) return;
         renderViewer({ running: false }, backend);
-        alert(`Fehler beim Starten von ${cfg.label}: ` + e);
+        alert(`Error starting ${cfg.label}: ` + e);
       } finally {
         btn.disabled = false; btn.textContent = prev;
       }
@@ -404,13 +419,13 @@
     }
 
     async function shutdownServer() {
-      if (!confirm("drone-check-Server wirklich beenden?")) return;
+      if (!confirm("Really shut down the drone-check server?")) return;
       const btn = $("shutdownBtn");
-      btn.disabled = true; btn.textContent = "Beende…";
+      btn.disabled = true; btn.textContent = "Shutting down…";
       try { await fetch("/api/shutdown", { method: "POST" }); } catch (e) {}
       document.body.innerHTML =
-        '<p style="padding:24px;font-size:16px">drone-check wurde beendet. '
-        + 'Du kannst dieses Fenster schließen.</p>';
+        '<p style="padding:24px;font-size:16px">drone-check has shut down. '
+        + 'You can close this window.</p>';
     }
 
     $("q").addEventListener("input", render);
