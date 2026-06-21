@@ -32,6 +32,19 @@
             border-radius: 10px; padding: 18px; }
     .card h2 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase;
                letter-spacing: .06em; color: var(--muted); }
+    .statusbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px;
+                 padding: 12px 18px; border-radius: 10px;
+                 background: var(--panel); border: 1px solid var(--line); }
+    .statusdot { width: 12px; height: 12px; border-radius: 50%; flex: none;
+                 background: var(--muted); }
+    .statusbar.settling .statusdot,
+    .statusbar.capturing .statusdot { background: var(--accent);
+                 animation: pulse 1.2s ease-in-out infinite; }
+    .statusbar.done .statusdot { background: var(--green); }
+    .statusbar.error .statusdot { background: var(--red); }
+    .statustext { font-weight: 600; font-size: 15px; }
+    .statussub { color: var(--muted); font-size: 13px; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
     .verdict { grid-column: 1 / -1; text-align: center; padding: 28px;
                border-radius: 12px; font-size: 30px; font-weight: 700;
                background: var(--panel); border: 1px solid var(--line); }
@@ -89,8 +102,14 @@
   </header>
 
   <main>
-    <div class="verdict" id="verdict">Waiting for a drone…
-      <span class="sub" id="verdictSub">Plug in a flight controller via USB.</span>
+    <div class="statusbar" id="statusBar">
+      <span class="statusdot" id="statusDot"></span>
+      <span class="statustext" id="statusText">Waiting for a drone…</span>
+      <span class="statussub" id="statusSub">Plug in a flight controller via USB.</span>
+    </div>
+
+    <div class="verdict" id="verdict">No capture yet
+      <span class="sub" id="verdictSub">The last result stays here until a new drone is read.</span>
     </div>
 
     <div class="card">
@@ -146,9 +165,11 @@
     }
 
     function resetCapture() {
-      // Clear the live capture panels; the banner is set via setState().
+      // Clear the live capture panels and the verdict. Called when a new drone
+      // is actually read, so the previous result stays visible until then.
       $("steps").innerHTML = ""; for (const k in stepEls) delete stepEls[k];
       $("rules").innerHTML = ""; $("info").querySelector("tbody").innerHTML = "";
+      setVerdict("busy");
     }
 
     function renderInfo(snap) {
@@ -180,28 +201,42 @@
         </div>`).join("");
     }
 
-    // --- ONE source of truth for the current state ---
-    // The header (top-left) and the big badge are two renderings of the same
-    // state, so they can never contradict each other.
-    const STATES = {
-      waiting:   { cls: "",      title: "Waiting for a drone…", sub: "Plug in a flight controller via USB.", header: "Ready — waiting for a drone" },
-      settling:  { cls: "",      title: "Drone detected",       sub: "Verifying stable connection…",         header: "Detected — settling" },
-      capturing: { cls: "",      title: "Capturing…",           sub: "Reading the flight controller…",       header: "Capturing" },
-      pass:      { cls: "pass",  title: "PASS ✓",               sub: "All critical checks passed.",          header: "PASS" },
-      fail:      { cls: "fail",  title: "FAIL ✗",               sub: "One or more critical checks failed.",  header: "FAIL" },
-      error:     { cls: "error", title: "Error",                sub: "capture error",                        header: "Error" },
+    // --- TWO independent renderings, two independent fields ---
+    // STATUS describes the live activity (is the tool busy / ready), and lives
+    // in its own banner + the header. VERDICT describes the *result* of the
+    // last capture and persists until a new drone is actually read, so the
+    // verdict, Capture, Drone and Checks panels stay put in between.
+    const STATUS = {
+      waiting:   { cls: "",          text: "Waiting for a drone…", sub: "Plug in a flight controller via USB.", header: "Ready — waiting for a drone" },
+      settling:  { cls: "settling",  text: "Drone detected",       sub: "Verifying stable connection…",         header: "Detected — settling" },
+      capturing: { cls: "capturing", text: "Capturing…",           sub: "Reading the flight controller…",       header: "Capturing" },
+      done:      { cls: "done",      text: "Capture complete",     sub: "Remove the drone when finished.",       header: "Ready" },
+      error:     { cls: "error",     text: "Capture error",        sub: "Remove the drone; the tool stays ready.", header: "Error" },
+    };
+    const VERDICT = {
+      none:  { cls: "",      title: "No capture yet", sub: "The last result stays here until a new drone is read." },
+      busy:  { cls: "",      title: "Reading…",       sub: "Awaiting the result of the current capture." },
+      pass:  { cls: "pass",  title: "PASS ✓",         sub: "All critical checks passed." },
+      fail:  { cls: "fail",  title: "FAIL ✗",         sub: "One or more critical checks failed." },
+      error: { cls: "error", title: "Error",          sub: "capture error" },
     };
     let settleTimer = null;
     function clearSettle() { if (settleTimer) { clearInterval(settleTimer); settleTimer = null; } }
     function setStatus(text) { $("conn").textContent = text; }
-    function setState(kind, opts = {}) {
-      clearSettle();  // any state change cancels a running settle countdown
-      const s = STATES[kind] || STATES.waiting;
+    function setStatusState(kind, opts = {}) {
+      clearSettle();  // any status change cancels a running settle countdown
+      const s = STATUS[kind] || STATUS.waiting;
+      $("statusBar").className = "statusbar " + s.cls;
+      $("statusText").textContent = opts.text != null ? opts.text : s.text;
+      $("statusSub").textContent = opts.sub != null ? opts.sub : s.sub;
+      setStatus(opts.header != null ? opts.header : s.header);
+    }
+    function setVerdict(kind, opts = {}) {
+      const s = VERDICT[kind] || VERDICT.none;
       const v = $("verdict");
       v.className = "verdict " + s.cls;
-      v.firstChild.textContent = s.title;
-      $("verdictSub").textContent = opts.sub || s.sub;
-      setStatus(opts.header || s.header);
+      v.firstChild.textContent = opts.title != null ? opts.title : s.title;
+      $("verdictSub").textContent = opts.sub != null ? opts.sub : s.sub;
     }
 
     // --- session log (newest first, capped to LOG_MAX) ---
@@ -239,45 +274,49 @@
         case "log_batch": setLog(evt.entries); break;
         case "log": addLog(evt.entry); break;
         case "ready":
-          // Authoritative "current state": always recover to a clear ready view,
-          // even after an error or an unstable connection.
-          setState("waiting");
+          // Authoritative "current activity": recover to a clear ready view,
+          // even after an error or an unstable connection. The verdict panel is
+          // left untouched so the previous result stays on screen.
+          setStatusState("waiting");
           break;
         case "detected": {
-          resetCapture();
+          // A drone appeared but reading has not started yet — keep the previous
+          // verdict/Capture/Drone/Checks visible, only update the status banner.
           const port = evt.port || "?";
           let n = Math.round(evt.settle || 3);
-          const tick = () => setState("settling", {
+          const settleSub = () => "Verifying stable connection… " + n + " s"
+            + (evt.description ? "  ·  " + evt.description : "");
+          setStatusState("settling", {
             header: "Detected " + port + " — settling…",
-            sub: "Verifying stable connection… " + n + " s"
-              + (evt.description ? "  ·  " + evt.description : ""),
+            sub: settleSub(),
           });
-          tick();
           settleTimer = setInterval(() => {
             n -= 1;
             if (n <= 0) { clearSettle(); return; }
-            $("verdictSub").textContent = "Verifying stable connection… " + n + " s"
-              + (evt.description ? "  ·  " + evt.description : "");
+            $("statusSub").textContent = settleSub();
           }, 1000);
           break;
         }
         case "capturing":
-          setState("capturing", { header: "Capturing — " + (evt.port || "?") });
+          // The read of a new drone starts here: now clear the old result.
+          resetCapture();
+          setStatusState("capturing", { header: "Capturing — " + (evt.port || "?") });
           break;
         case "step": setStep(evt.step, evt.status); break;
         case "verdict":
           renderInfo(evt.snapshot); renderRules(evt.evaluation);
-          setState(evt.passed ? "pass" : "fail", {
+          setVerdict(evt.passed ? "pass" : "fail");
+          setStatusState("done", {
             header: (evt.passed ? "PASS" : "FAIL") + (evt.path ? " — " + evt.path : ""),
           });
           break;
         case "disconnected":
-          // History only (it is in the session log); never override the badge,
-          // so the header and the badge always agree.
+          // History only (it is in the session log); never override the panels,
+          // so the status banner and the header always agree.
           break;
         case "error":
-          setState("error", {
-            sub: evt.message || "capture error",
+          setVerdict("error", { sub: evt.message || "capture error" });
+          setStatusState("error", {
             header: "Error — remove the drone; the tool stays ready",
           });
           break;
