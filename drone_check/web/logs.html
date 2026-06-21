@@ -196,8 +196,17 @@
       const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
       const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
       const ver = esc((c.firmware || {}).version || "");
-      const viewBtn = (VIEWER_ENABLED && c.has_dump)
-        ? `<button data-view="${esc(c.id)}" data-ver="${ver}">Im Configurator</button>` : "";
+      // Both Configurator backends (SITL and bf-configd) are Betaflight-only, so
+      // a non-Betaflight capture (e.g. INAV) can't be served. Offer an explained,
+      // disabled button instead of one that only fails with an error pop-up.
+      const variant = (c.firmware || {}).variant || "";
+      const cfgSupported = !variant || variant === "BTFL";
+      let viewBtn = "";
+      if (VIEWER_ENABLED && c.has_dump) {
+        viewBtn = cfgSupported
+          ? `<button data-view="${esc(c.id)}" data-ver="${ver}">Im Configurator</button>`
+          : `<button disabled title="Die Configurator-Ansicht unterstützt nur Betaflight – ${esc(variant)} wird nicht unterstützt.">Im Configurator (nur BF)</button>`;
+      }
       return `<tr>
         <td>${verdictBadge(c)}</td>
         <td class="ts">${esc(c.captured_at || c.id)}</td>

@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .applog import AppLog
 from . import captures
+from .bfcd.metadata import BETAFLIGHT_VARIANT
 from .bfcd.session import BfcdError, BfcdSession
 from .config import AppConfig
 from .sitl import SitlCancelled, SitlError, SitlRunner
@@ -32,6 +33,21 @@ from .orchestrator import Orchestrator
 from . import serialwatch
 
 _WEB_DIR = Path(__file__).parent / "web"
+
+
+def _unsupported_variant(snapshot: dict) -> str | None:
+    """Return the FC variant if it cannot be served in the Configurator.
+
+    Both viewer backends (SITL and bf-configd) are Betaflight-only, so a
+    non-Betaflight capture (e.g. INAV) is rejected up front with a clear reason
+    instead of failing deep inside the backend (SITL would otherwise report a
+    misleading "no SITL binary for firmware …"). An unknown/empty variant is
+    allowed through — only a *known* non-Betaflight variant is refused.
+    """
+    variant = (snapshot.get("firmware") or {}).get("variant", "")
+    if variant and variant != BETAFLIGHT_VARIANT:
+        return variant
+    return None
 
 
 class Hub:
@@ -206,6 +222,13 @@ def create_app(config: AppConfig, demo: bool = False,
             return JSONResponse({"ok": False, "reason": "unknown capture"}, status_code=404)
 
         snapshot = captures._read_json(folder / "snapshot.json") or {}
+        variant = _unsupported_variant(snapshot)
+        if variant:
+            return JSONResponse({
+                "ok": False, "unsupported_variant": variant,
+                "reason": f"Configurator view supports Betaflight only; "
+                          f"this capture is {variant}.",
+            })
         version = (snapshot.get("firmware") or {}).get("version", "")
         dump_file = folder / "raw" / captures.DUMP_FILENAME
         if not dump_file.is_file():
@@ -263,6 +286,13 @@ def create_app(config: AppConfig, demo: bool = False,
             return JSONResponse({"ok": False, "reason": "unknown capture"}, status_code=404)
 
         snapshot = captures._read_json(folder / "snapshot.json") or {}
+        variant = _unsupported_variant(snapshot)
+        if variant:
+            return JSONResponse({
+                "ok": False, "unsupported_variant": variant,
+                "reason": f"Configurator view supports Betaflight only; "
+                          f"this capture is {variant}.",
+            })
         version = (snapshot.get("firmware") or {}).get("version", "")
         dump_file = folder / "raw" / captures.DUMP_FILENAME
         if not dump_file.is_file():
