@@ -312,6 +312,9 @@ class _FakeSitl:
         from drone_check.sitl import SitlStatus
         return SitlStatus(running=False)
 
+    def available(self):
+        return True
+
     def stop(self):
         self.stopped = True
 
@@ -423,3 +426,23 @@ def test_bfcd_status_and_stop_routes(tmp_path, monkeypatch):
         st = client.get("/api/bfcd/status").json()
         assert st["enabled"] is True and st["running"] is False
         assert client.post("/api/bfcd/stop").json()["ok"] is True
+
+
+def test_viewer_defaults_to_bfcd(tmp_path, monkeypatch):
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", _FakeBfcd)
+    app = create_app(_config(tmp_path), demo=True)
+    with TestClient(app) as client:
+        st = client.get("/api/viewer").json()
+        assert st["backend"] == "bfcd" and st["enabled"] is True
+
+
+def test_viewer_selects_sitl_from_config(tmp_path, monkeypatch):
+    monkeypatch.setattr("drone_check.server.SitlRunner", _FakeSitl)
+    monkeypatch.setattr("drone_check.server.BfcdSession", _FakeBfcd)
+    cfg = _config(tmp_path)
+    cfg.settings.viewer_backend = "sitl"
+    app = create_app(cfg, demo=True)
+    with TestClient(app) as client:
+        st = client.get("/api/viewer").json()
+        assert st["backend"] == "sitl"

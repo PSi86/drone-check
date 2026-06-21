@@ -58,7 +58,9 @@ built with a small read-only guard. Implemented for the 4.5 family:
   `exit()` like a rebooting FC, so the watchdog reloads it from the saved config
   (rate-limited) and the Configurator's WebSocket reconnects — without it the
   view would go dead after one CLI session. (`bfcd_auto_restart`, on by default.)
-- The web UI offers it next to SITL on `/logs` (plan §BFCD-012).
+- The web UI exposes one *Im Configurator* button on `/logs`; the backend
+  (bf-configd or SITL) is selected in config — `viewer_backend`, default `bfcd`
+  (plan §BFCD-012).
 
 Deferred (next iterations): re-enabling the OSD stack (SITL `#undef`s it),
 runtime stubs beyond SITL's, other families (4.4/4.3/2025.12) and golden tests

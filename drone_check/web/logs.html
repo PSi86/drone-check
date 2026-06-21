@@ -135,11 +135,11 @@
   <script>
     const $ = (id) => document.getElementById(id);
     let CAPTURES = [];
-    // Two interchangeable view backends share one footer bar (they use the same
-    // TCP port, so only one runs at a time). Each is gated by its own status.
-    let SITL_ENABLED = true;   // gates "Im Configurator (SITL)"; from /api/sitl/status
-    let BFCD_ENABLED = false;  // gates "bf-configd (read-only)"; from /api/bfcd/status
-    let activeBackend = "sitl";
+    // One "View in Configurator" button. Which backend serves it (SITL or the
+    // read-only bf-configd) is decided in config (settings.viewer_backend) and
+    // reported by /api/viewer — never chosen in the UI. Default: bf-configd.
+    let VIEWER_ENABLED = false;
+    let activeBackend = "bfcd";
     const BACKENDS = {
       sitl: {
         label: "SITL",
@@ -196,10 +196,8 @@
       const hashSrc = c.firmware_hash_source ? ` <span class="sub">(${esc(c.firmware_hash_source)})</span>` : "";
       const warn = c.readable === false ? ' <span class="sub">⚠ unlesbar</span>' : "";
       const ver = esc((c.firmware || {}).version || "");
-      const cfgBtn = (SITL_ENABLED && c.has_dump)
-        ? `<button data-cfg="${esc(c.id)}" data-ver="${ver}">Im Configurator</button>` : "";
-      const bfcdBtn = (BFCD_ENABLED && c.has_dump)
-        ? `<button data-bfcd="${esc(c.id)}" data-ver="${ver}" title="Read-only-Ansicht (jeder Schreibzugriff wird abgelehnt)">bf-configd</button>` : "";
+      const viewBtn = (VIEWER_ENABLED && c.has_dump)
+        ? `<button data-view="${esc(c.id)}" data-ver="${ver}">Im Configurator</button>` : "";
       return `<tr>
         <td>${verdictBadge(c)}</td>
         <td class="ts">${esc(c.captured_at || c.id)}</td>
@@ -208,7 +206,7 @@
         <td>${esc(fwTxt)}${git}</td>
         <td>${hash}${hashSrc}</td>
         <td><div class="actions">
-          <button data-open="${esc(c.id)}">Ordner öffnen</button>${cfgBtn}${bfcdBtn}
+          <button data-open="${esc(c.id)}">Ordner öffnen</button>${viewBtn}
         </div></td>
       </tr>`;
     }
@@ -221,11 +219,9 @@
       $("rows").querySelectorAll("button[data-open]").forEach((b) => {
         b.onclick = () => openFolder(b.getAttribute("data-open"), b);
       });
-      $("rows").querySelectorAll("button[data-cfg]").forEach((b) => {
-        b.onclick = () => openViewer(b.getAttribute("data-cfg"), b.getAttribute("data-ver"), b, "sitl");
-      });
-      $("rows").querySelectorAll("button[data-bfcd]").forEach((b) => {
-        b.onclick = () => openViewer(b.getAttribute("data-bfcd"), b.getAttribute("data-ver"), b, "bfcd");
+      $("rows").querySelectorAll("button[data-view]").forEach((b) => {
+        b.onclick = () => openViewer(
+          b.getAttribute("data-view"), b.getAttribute("data-ver"), b, activeBackend);
       });
     }
 
@@ -378,22 +374,20 @@
       const r = await fetch("/api/captures");
       const data = await r.json().catch(() => ({ captures: [] }));
       CAPTURES = data.captures || [];
-      // Learn which view backends are enabled (and reflect any already-running
-      // session) BEFORE rendering, so each button is only shown when its feature
-      // is on. Both backends are probed; whichever is active drives the bar.
-      let sitlSt = null, bfcdSt = null;
-      try { sitlSt = await (await fetch("/api/sitl/status")).json(); } catch (e) {}
-      try { bfcdSt = await (await fetch("/api/bfcd/status")).json(); } catch (e) {}
-      SITL_ENABLED = !sitlSt || sitlSt.enabled !== false;
-      BFCD_ENABLED = !!(bfcdSt && bfcdSt.enabled);
+      // Learn which backend config selected (and whether it is available, and
+      // any already-running session) BEFORE rendering — the one button is only
+      // shown when the configured backend is on.
+      let st = null;
+      try { st = await (await fetch("/api/viewer")).json(); } catch (e) {}
+      if (st) {
+        activeBackend = st.backend || activeBackend;
+        VIEWER_ENABLED = !!st.enabled;
+      }
       fillVariants();
       render();
-      if (bfcdSt && (bfcdSt.running || bfcdSt.starting)) {
-        activeBackend = "bfcd"; renderViewer(bfcdSt, "bfcd");
-        if (bfcdSt.starting) startPolling("bfcd");
-      } else if (sitlSt) {
-        activeBackend = "sitl"; renderViewer(sitlSt, "sitl");
-        if (sitlSt.starting) startPolling("sitl");
+      if (st && (st.running || st.starting)) {
+        renderViewer(st, activeBackend);
+        if (st.starting) startPolling(activeBackend);
       }
     }
 

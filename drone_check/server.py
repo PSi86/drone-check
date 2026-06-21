@@ -283,6 +283,28 @@ def create_app(config: AppConfig, demo: bool = False,
         await asyncio.to_thread(bfcd.stop)
         return JSONResponse({"ok": True})
 
+    def _viewer():
+        """The single Configurator backend chosen in config: (name, runner)."""
+        if config.settings.viewer_backend == "sitl":
+            return "sitl", sitl
+        return "bfcd", bfcd
+
+    @app.get("/api/viewer")
+    async def viewer_status() -> JSONResponse:
+        """Status of the configured Configurator backend. The logs page polls
+        this and shows a single button; which backend it drives is config-only."""
+        name, runner = _viewer()
+        st = runner.status()
+        return JSONResponse({
+            "backend": name,
+            "enabled": runner.available(),
+            "running": st.running, "starting": st.starting,
+            "phase": st.phase, "detail": st.detail,
+            "sent": st.sent, "total": st.total,
+            "version": st.version, "capture_id": st.capture_id,
+            "connect_url": st.connect_url,
+        })
+
     @app.post("/api/shutdown")
     async def shutdown_server() -> JSONResponse:
         """Stop the whole server cleanly from the web UI. Flips uvicorn's

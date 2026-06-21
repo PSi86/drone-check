@@ -222,14 +222,16 @@ how it works, the VTX config patch, caching, configuration and troubleshooting.
 `dump all` to the Configurator over MSP using a backend built from official
 Betaflight source with a firmware-enforced **read-only guard** — every MSP write
 is refused, so an inspector can view everything but nothing can be changed or
-persisted. Working for the Betaflight 4.5 family (Linux/WSL).
+persisted. It is the **default** backend for *Im Configurator* and works for the
+Betaflight 4.4, 4.5 and 2025.12 families (Linux/WSL).
 
-Build the backend once (inside WSL/Linux), then it appears on the `/logs` page
-as a **bf-configd** button next to *Im Configurator* (SITL):
+The `/logs` page has a single *Im Configurator* button per capture; which backend
+serves it is a config choice — `viewer_backend: bfcd` (default) or `sitl` in
+`settings.yaml`. Build the backend(s) once (inside WSL/Linux):
 
 ```powershell
-bash scripts/build_bfcd.sh 4.5.3          # build the 4.5 backend into the cache
-# then on /logs, click "bf-configd" on a capture -> ws://127.0.0.1:6762
+bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2   # build into the cache
+# then on /logs, click "Im Configurator" on a capture -> ws://127.0.0.1:6762
 
 # or from the CLI, no UI:
 .\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>    # selection only

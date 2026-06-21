@@ -68,9 +68,15 @@ class Settings:
     # parser fall back to `diff all`/`diff` when no dump is present.
     parse_diff_fallback: bool = False
 
-    # "View in Configurator": load a capture into a version-matched Betaflight
-    # SITL (built under WSL by scripts/build_sitl.sh) so the real web
-    # Configurator can connect to it. See sitl.py for the full flow.
+    # "View in Configurator": which backend serves a capture to the real web
+    # Configurator. A single choice — the logs page shows one button for it.
+    #   "bfcd" (default) – the lighter, read-only bf-configd backend
+    #   "sitl"           – the full Betaflight SITL instance
+    # The chosen backend must also be enabled below and its environment present.
+    viewer_backend: str = "bfcd"
+
+    # Load a capture into a version-matched Betaflight SITL (built under WSL by
+    # scripts/build_sitl.sh) so the real web Configurator can connect to it.
     sitl_enabled: bool = True
     sitl_distro: str = "Ubuntu"  # WSL distro that has the SITL cache
     # WSL-side paths (~ expands inside the distro).
@@ -146,6 +152,9 @@ def load_settings(path: Path) -> Settings:
     if "cli_commands" in data and data["cli_commands"]:
         s.cli_commands = [str(c) for c in data["cli_commands"]]
     s.parse_diff_fallback = bool(data.get("parse_diff_fallback", s.parse_diff_fallback))
+
+    backend = str(data.get("viewer_backend", s.viewer_backend)).lower()
+    s.viewer_backend = backend if backend in ("bfcd", "sitl") else s.viewer_backend
 
     sitl = data.get("sitl", {}) or {}
     s.sitl_enabled = bool(sitl.get("enabled", s.sitl_enabled))

@@ -48,9 +48,9 @@ Implemented and tested (Python side):
   responses against SITL, masking dynamic fields. *(BFCD-009)*
 - `drone_check/bfcd/session.py` — the integration seam: detect → select →
   resolve binary → load and serve over MSP, with a pollable status. *(BFCD-012)*
-- Web UI: the `/logs` page offers a **bf-configd** button next to *Im
-  Configurator* (SITL) on each capture; both drive a shared status bar and the
-  bf-configd error suggests SITL as a fallback. *(BFCD-012)*
+- Web UI: the `/logs` page shows **one** *Im Configurator* button per capture;
+  which backend serves it (bf-configd or SITL) is chosen in config
+  (`viewer_backend`, default `bfcd`), never in the UI. *(BFCD-012)*
 - CLI: `drone-check bfcd plan <dump.txt>` (selection only) and
   `drone-check bfcd serve <dump.txt>` (run the backend).
 
