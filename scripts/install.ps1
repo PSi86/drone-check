@@ -27,8 +27,12 @@
     Path to a pre-built SITL bundle (from `drone-check sitl package`) to install,
     so no toolchain or compiling is needed on this machine.
 
+.PARAMETER BfcdBundle
+    Path to a pre-built bf-configd bundle (from `drone-check bfcd package`) to
+    install. If neither bundle is given they are downloaded from the release.
+
 .PARAMETER Distro
-    WSL distro to use for SITL (default: Ubuntu).
+    WSL distro to use for the Configurator binaries (default: Ubuntu).
 #>
 [CmdletBinding()]
 param(
@@ -36,10 +40,13 @@ param(
     [switch]$Sitl,
     [switch]$NoSitl,
     [string]$SitlBundle = "",
+    [string]$BfcdBundle = "",
     [string]$Distro = "Ubuntu"
 )
 
 $ErrorActionPreference = "Stop"
+$GhRepo = "PSi86/drone-check"   # repo hosting the binary bundle assets
+$GhAssetTag = "binaries"         # dedicated release tag the bundles are attached to
 
 function Info($m)  { Write-Host "==> $m" -ForegroundColor Cyan }
 function Ok($m)    { Write-Host "    $m" -ForegroundColor Green }
@@ -100,10 +107,10 @@ elseif ($NoSitl)  { $wantSitl = $false }
 else {
     Write-Host ""
     Write-Host "The 'View in Configurator' feature opens a stored capture in the real" -ForegroundColor White
-    Write-Host "Betaflight Configurator using a SITL instance under WSL (Windows Subsystem" -ForegroundColor White
-    Write-Host "for Linux). Capture and rule-checking work fully WITHOUT it." -ForegroundColor White
-    $ans = Read-Host "Set up the Configurator/SITL feature now? (needs WSL) [y/N]"
-    $wantSitl = ($ans -match '^(y|yes|j|ja)$')
+    Write-Host "Betaflight Configurator (via bf-configd, the read-only default, or SITL)" -ForegroundColor White
+    Write-Host "under WSL. Capture and rule-checking work fully WITHOUT it." -ForegroundColor White
+    $ans = Read-Host "Set up the Configurator feature now? (needs WSL) [Y/n]"
+    $wantSitl = ($ans -notmatch '^(n|no|nein)$')
 }
 
 if (-not $wantSitl) {
@@ -142,30 +149,54 @@ if (-not $wslOk) {
 }
 Ok "WSL with '$Distro' is available."
 
-# 3b. SITL binaries: prefer installing a pre-built bundle (no toolchain needed).
-if (-not $SitlBundle) {
-    $found = Get-ChildItem -Path $RepoRoot -Filter "sitl-bundle*.tar.gz" -ErrorAction SilentlyContinue |
-             Select-Object -First 1
-    if ($found) { $SitlBundle = $found.FullName }
+# 3b. Configurator binaries: install pre-built bundles (no toolchain needed).
+# Download the *-bundle release asset whose name contains $pat to $out, from the
+# dedicated binaries release. Uses the GitHub CLI (works for the private repo,
+# with the user's existing auth).
+function Get-Asset($pat, $out) {
+    Info "Fetching $pat from the '$GhAssetTag' release ..."
+    if (Get-Command gh -ErrorAction SilentlyContinue) {
+        $prev = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        try {
+            gh release download $GhAssetTag --repo $GhRepo --pattern "$pat*.tar.gz" --output $out --clobber | Out-Null
+        } catch {}
+        $ErrorActionPreference = $prev
+        if (Test-Path $out) { return $true }
+    }
+    return $false
 }
 
-if ($SitlBundle -and (Test-Path $SitlBundle)) {
-    Info "Installing pre-built SITL binaries from $SitlBundle ..."
-    & $venvPy -m drone_check sitl install "$SitlBundle"
-    Ok "SITL binaries installed."
-} else {
-    Warn "No pre-built SITL bundle found."
-    Warn "Either obtain a bundle and install it:"
-    Warn "    .\.venv\Scripts\drone-check.exe sitl install <path-to-sitl-bundle.tar.gz>"
-    Warn "or build the binaries from source inside WSL (needs a toolchain):"
-    Warn "    wsl -d $Distro -- sudo apt-get update; sudo apt-get install -y build-essential ruby git"
-    Warn "    wsl -d $Distro -- bash scripts/build_sitl.sh 4.4.0 2025.12.2   (run from the repo)"
-    Warn "See docs/CONFIGURATOR.md for details. Until then, 'View in Configurator' stays hidden."
+# Provision one backend: prefer an explicit/local bundle, else download it.
+function Install-Backend($name, $bundle, $buildHint) {
+    if ($name -eq "bfcd") { $label = "bf-configd" } else { $label = "SITL" }
+    if (-not $bundle) {
+        $found = Get-ChildItem -Path $RepoRoot -Filter "$name-bundle*.tar.gz" -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+        if ($found) { $bundle = $found.FullName }
+    }
+    if (-not $bundle) {
+        $tmp = Join-Path $env:TEMP "$name-bundle.tar.gz"
+        if (Get-Asset "$name-bundle" $tmp) { $bundle = $tmp }
+    }
+    if ($bundle -and (Test-Path $bundle)) {
+        Info "Installing pre-built $label binaries ..."
+        & $venvPy -m drone_check $name install "$bundle"
+        if ($LASTEXITCODE -eq 0) { Ok "$label binaries installed." }
+        else { Warn "$label bundle install failed (see above)." }
+    } else {
+        Warn "No $label bundle found locally or on the '$GhAssetTag' release."
+        Warn "  install one you were given:  .\.venv\Scripts\drone-check.exe $name install <bundle.tar.gz>"
+        Warn "  or build from source:        $buildHint"
+    }
 }
+
+# bf-configd is the default backend, so provision it first; SITL is the alternative.
+Install-Backend "bfcd" $BfcdBundle "wsl -d $Distro -- bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2"
+Install-Backend "sitl" $SitlBundle "wsl -d $Distro -- bash scripts/build_sitl.sh 4.5.3 4.4.0 2025.12.2"
 
 Write-Host ""
-Info "Cached SITL versions:"
-& $venvPy -m drone_check sitl list
+Info "Cached bf-configd families:"; & $venvPy -m drone_check bfcd list
+Info "Cached SITL versions:";       & $venvPy -m drone_check sitl list
 Write-Host ""
 Ok "Done. Start drone-check with:"
 Ok "    .\.venv\Scripts\drone-check.exe serve"

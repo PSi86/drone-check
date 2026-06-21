@@ -60,16 +60,19 @@ Configurator** via a version-matched SITL instance — see
 
 From the repository root, run the guided installer for your OS — it checks
 Python, creates the `.venv`, installs drone-check, and **asks** whether you also
-want the "View in Configurator" (SITL) feature, installing the pre-built binaries
-from a bundle if you opt in.
+want the "View in Configurator" feature. If you opt in it downloads the pre-built
+binary bundles (bf-configd — the read-only default — and SITL) from the project's
+`binaries` GitHub release, so no toolchain is needed. (The download uses the
+GitHub CLI `gh`, as the repo is private; install/authenticate `gh` first, or pass
+a local bundle with `--bfcd-bundle` / `--sitl-bundle`.)
 
 ```powershell
-# Windows (sets up WSL-based SITL if you opt in)
+# Windows (binaries run under WSL)
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
 ```bash
-# Linux / macOS (SITL runs natively on Linux; not available on macOS)
+# Linux / macOS (binaries run natively on Linux; not available on macOS)
 bash scripts/install.sh
 ```
 
@@ -77,12 +80,12 @@ Unattended variants (same idea on both):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -NoSitl
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Sitl -SitlBundle C:\path\sitl-bundle.tar.gz
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -Sitl -BfcdBundle C:\path\bfcd-bundle.tar.gz
 ```
 
 ```bash
 bash scripts/install.sh --no-sitl
-bash scripts/install.sh --sitl --sitl-bundle /path/sitl-bundle.tar.gz
+bash scripts/install.sh --sitl --bfcd-bundle /path/bfcd-bundle.tar.gz
 ```
 
 Start it afterwards with `drone-check serve` (or `.\.venv\Scripts\drone-check.exe

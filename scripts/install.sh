@@ -10,21 +10,31 @@
 # Run it from the repository root:
 #     bash scripts/install.sh
 #
+# The "View in Configurator" feature has two interchangeable backends:
+# bf-configd (lighter, read-only; the default) and SITL (full FC). This installer
+# provisions their pre-built binaries — preferring a local bundle, otherwise
+# downloading the bundle from the latest GitHub release (no toolchain needed).
+#
 # Options (for unattended runs):
 #   --dev                 also install development dependencies (pytest)
-#   --sitl                set up the SITL feature without asking
-#   --no-sitl             skip the SITL feature without asking
+#   --sitl                set up the Configurator feature without asking
+#   --no-sitl             skip the Configurator feature without asking
 #   --sitl-bundle <path>  install pre-built SITL binaries from this bundle
+#   --bfcd-bundle <path>  install pre-built bf-configd binaries from this bundle
 #
 set -euo pipefail
 
-DEV=0; WANT_SITL=""; BUNDLE=""
+GH_REPO="PSi86/drone-check"     # repo that hosts the binary bundle assets
+GH_ASSET_TAG="binaries"          # dedicated release tag the bundles are attached to
+
+DEV=0; WANT_SITL=""; BUNDLE=""; BFCD_BUNDLE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dev) DEV=1 ;;
     --sitl) WANT_SITL=1 ;;
     --no-sitl) WANT_SITL=0 ;;
     --sitl-bundle) shift; BUNDLE="${1:-}" ;;
+    --bfcd-bundle) shift; BFCD_BUNDLE="${1:-}" ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -91,9 +101,9 @@ if [ "$(uname -s)" = "Linux" ] && ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx 
   warn "    sudo usermod -aG dialout \"$USER\""
 fi
 
-# --- 3. Optional: SITL ("View in Configurator") ----------------------------
+# --- 3. Optional: "View in Configurator" backends (bf-configd + SITL) -------
 if [ "$(uname -s)" != "Linux" ]; then
-  info "SITL ('View in Configurator') needs Linux binaries and is not available on this OS."
+  info "'View in Configurator' needs Linux binaries and is not available on this OS."
   echo
   ok "Done. Start drone-check with:  ./.venv/bin/drone-check serve"
   ok "then open http://127.0.0.1:8000"
@@ -103,42 +113,73 @@ fi
 if [ -z "$WANT_SITL" ]; then
   echo
   echo "The 'View in Configurator' feature opens a stored capture in the real"
-  echo "Betaflight Configurator using a SITL instance (runs natively on Linux)."
-  echo "Capture and rule-checking work fully WITHOUT it."
-  printf "Set up the Configurator/SITL feature now? [y/N] "
+  echo "Betaflight Configurator. It uses bf-configd (lighter, read-only; the"
+  echo "default) or SITL — both run natively on Linux. Capture and rule-checking"
+  echo "work fully WITHOUT it."
+  printf "Set up the Configurator feature now? [Y/n] "
   read -r ans || ans=""
-  case "$ans" in y|Y|yes|j|J|ja) WANT_SITL=1 ;; *) WANT_SITL=0 ;; esac
+  case "$ans" in n|N|no|nein) WANT_SITL=0 ;; *) WANT_SITL=1 ;; esac
 fi
 
 if [ "$WANT_SITL" -ne 1 ]; then
-  info "Skipping the SITL feature. It stays hidden in the UI until binaries are present."
+  info "Skipping the Configurator feature. It stays hidden in the UI until binaries are present."
   echo
   ok "Done. Start drone-check with:  ./.venv/bin/drone-check serve"
   ok "then open http://127.0.0.1:8000"
   exit 0
 fi
 
-# Prefer installing a pre-built bundle (no toolchain needed).
-if [ -z "$BUNDLE" ]; then
-  BUNDLE="$(ls -1 "$REPO"/sitl-bundle*.tar.gz 2>/dev/null | head -1 || true)"
-fi
-if [ -n "$BUNDLE" ] && [ -f "$BUNDLE" ]; then
-  info "Installing pre-built SITL binaries from $BUNDLE ..."
-  "$VENV_PY" -m drone_check sitl install "$BUNDLE"
-  ok "SITL binaries installed."
-else
-  warn "No pre-built SITL bundle found."
-  warn "Either install a bundle you were given:"
-  warn "    ./.venv/bin/drone-check sitl install <path-to-sitl-bundle.tar.gz>"
-  warn "or build the binaries from source (needs a toolchain):"
-  warn "    sudo apt install -y build-essential ruby git"
-  warn "    bash scripts/build_sitl.sh 4.4.0 2025.12.2"
-  warn "See docs/CONFIGURATOR.md. Until then, 'View in Configurator' stays hidden."
-fi
+# Download the *-bundle release asset whose name contains $1 to $2, from the
+# dedicated binaries release. Prefer the GitHub CLI (works for the private repo,
+# using the user's existing auth); fall back to curl if the repo is public.
+fetch_asset() {
+  local pat="$1" out="$2" url
+  info "Fetching $pat from the '$GH_ASSET_TAG' release ..."
+  if command -v gh >/dev/null 2>&1 \
+     && gh release download "$GH_ASSET_TAG" --repo "$GH_REPO" \
+          --pattern "${pat}*.tar.gz" --output "$out" --clobber >/dev/null 2>&1; then
+    return 0
+  fi
+  command -v curl >/dev/null 2>&1 || return 1
+  url="$(curl -fsSL "https://api.github.com/repos/$GH_REPO/releases/tags/$GH_ASSET_TAG" 2>/dev/null \
+    | grep -oE 'https://[^"]*'"$pat"'[^"]*\.tar\.gz' | head -1)"
+  [ -n "$url" ] || return 1
+  curl -fsSL "$url" -o "$out"
+}
+
+# Provision one backend: prefer an explicit/local bundle, else download it from
+# the latest release. $1 = name (bfcd|sitl), $2 = explicit bundle, $3 = build hint.
+provision() {
+  local name="$1" bundle="$2" build="$3" label
+  [ "$name" = "bfcd" ] && label="bf-configd" || label="SITL"
+  if [ -z "$bundle" ]; then
+    bundle="$(ls -1 "$REPO/$name-bundle"*.tar.gz 2>/dev/null | head -1 || true)"
+  fi
+  if [ -z "$bundle" ]; then
+    local tmp; tmp="$(mktemp 2>/dev/null || echo "/tmp/$name-bundle.tar.gz")"
+    if fetch_asset "$name-bundle" "$tmp"; then bundle="$tmp"; fi
+  fi
+  if [ -n "$bundle" ] && [ -f "$bundle" ]; then
+    info "Installing pre-built $label binaries ..."
+    if "$VENV_PY" -m drone_check "$name" install "$bundle"; then
+      ok "$label binaries installed."
+    else
+      warn "$label bundle install failed (see above)."
+    fi
+  else
+    warn "No $label bundle found locally or on the latest release."
+    warn "  install one you were given:  ./.venv/bin/drone-check $name install <bundle.tar.gz>"
+    warn "  or build from source:        $build"
+  fi
+}
+
+# bf-configd is the default backend, so provision it first; SITL is the alternative.
+provision bfcd "$BFCD_BUNDLE" "sudo apt install -y build-essential ruby git && bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2"
+provision sitl "$BUNDLE"      "sudo apt install -y build-essential ruby git && bash scripts/build_sitl.sh 4.5.3 4.4.0 2025.12.2"
 
 echo
-info "Cached SITL versions:"
-"$VENV_PY" -m drone_check sitl list || true
+info "Cached bf-configd families:"; "$VENV_PY" -m drone_check bfcd list || true
+info "Cached SITL versions:";       "$VENV_PY" -m drone_check sitl list || true
 echo
 ok "Done. Start drone-check with:  ./.venv/bin/drone-check serve"
 ok "then open http://127.0.0.1:8000"
