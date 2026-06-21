@@ -98,7 +98,7 @@
     </nav>
     <span class="status" id="conn">connecting…</span>
     <button class="demo-btn hidden" id="demo">Run demo</button>
-    <button class="shutdown" id="shutdownBtn" title="drone-check-Server beenden">Server beenden</button>
+    <button class="shutdown" id="shutdownBtn" title="Shut down the drone-check server">Shut down server</button>
   </header>
 
   <main>
@@ -345,13 +345,13 @@
     $("demo").onclick = () => fetch("/api/demo", { method: "POST" });
 
     async function shutdownServer() {
-      if (!confirm("drone-check-Server wirklich beenden?")) return;
+      if (!confirm("Really shut down the drone-check server?")) return;
       const btn = $("shutdownBtn");
-      btn.disabled = true; btn.textContent = "Beende…";
+      btn.disabled = true; btn.textContent = "Shutting down…";
       try { await fetch("/api/shutdown", { method: "POST" }); } catch (e) {}
       document.body.innerHTML =
-        '<p style="padding:24px;font-size:16px">drone-check wurde beendet. '
-        + 'Du kannst dieses Fenster schließen.</p>';
+        '<p style="padding:24px;font-size:16px">drone-check has shut down. '
+        + 'You can close this window.</p>';
     }
     $("shutdownBtn").onclick = shutdownServer;
   </script>
