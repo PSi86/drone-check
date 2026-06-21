@@ -248,6 +248,7 @@
       saving: "Speichere & starte neu…",
       starting2: "Starte aus gespeicherter Konfiguration…",
       proxy: "Starte Configurator-Proxy…",
+      verifying: "Prüfe Verbindung zum Configurator…",
       ready: "Bereit",
     };
     let viewerPoll = null;
@@ -337,7 +338,13 @@
         if (epoch !== viewerEpoch) return;  // superseded by a stop / newer open
         stopPolling();
         if (d.ok) {
-          renderViewer({ running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url }, backend);
+          // The start POST only returns once the backend is verified reachable,
+          // so reflect the real backend status rather than assuming "running".
+          let st = null;
+          try { st = await (await fetch(cfg.status)).json(); } catch (e) {}
+          renderViewer((st && (st.running || st.starting)) ? st
+            : { running: true, version: d.version || ver, capture_id: id, connect_url: d.connect_url },
+            backend);
         } else if (d.cancelled) {
           renderViewer({ running: false }, backend);  // we asked it to stop — no error
         } else {
@@ -358,15 +365,24 @@
     async function stopViewer() {
       viewerEpoch++;  // invalidate any in-flight open response
       stopPolling();
-      renderViewer({ stopping: true }, activeBackend);
       const cfg = BACKENDS[activeBackend];
-      try { await fetch(cfg.stop, { method: "POST" }); } catch (e) {}
-      // Reflect the real post-stop state rather than assuming, so the bar can
-      // never get wedged on "Stoppe…" if anything unexpected happened.
-      try {
-        const st = await (await fetch(cfg.status)).json();
-        renderViewer(st, activeBackend);
-      } catch (e) { renderViewer({ running: false }, activeBackend); }
+      renderViewer({ stopping: true }, activeBackend);
+      // Keep showing "Stoppe…" until the backend status *genuinely* reports it
+      // is down — never hide the bar optimistically while teardown is running.
+      const done = fetch(cfg.stop, { method: "POST" }).catch(() => {});
+      for (let i = 0; i < 80; i++) {  // up to ~12s, then give up
+        let st = null;
+        try { st = await (await fetch(cfg.status)).json(); } catch (e) {}
+        if (st && !st.running && !st.starting) {
+          renderViewer(st, activeBackend);  // idle -> bar hides
+          await done;
+          return;
+        }
+        renderViewer({ stopping: true }, activeBackend);
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      await done;
+      renderViewer({ running: false }, activeBackend);
     }
     $("sitlStop").onclick = stopViewer;
 

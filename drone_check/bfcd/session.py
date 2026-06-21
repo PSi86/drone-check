@@ -35,11 +35,19 @@ from ..sitl import (
     _NEW_PROCESS_GROUP,
     _find_msp_port,
     _port_free,
+    _speaks_msp,
     _wait_port,
     load_dump_over_cli,
 )
 from .compat import BackendSelection, load_matrix, select_backend
 from .metadata import DumpMetadata, detect_metadata
+
+try:  # optional: lets readiness be verified through the real WebSocket endpoint
+    import websockets as _websockets
+    _HAS_WEBSOCKETS = True
+except Exception:  # pragma: no cover - environment without websockets
+    _websockets = None
+    _HAS_WEBSOCKETS = False
 
 # The backend binary's process name (comm, truncated to 15 chars) used for the
 # pkill fallback that frees the TCP port after a reboot.
@@ -107,6 +115,7 @@ class BfcdSession:
         self._serving = False
         self._run_dir: str | None = None
         self._elf: str | None = None
+        self._msp_port: int | None = None
         self._host = "127.0.0.1"
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
@@ -393,7 +402,10 @@ class BfcdSession:
             self._progress("starting2", "Rebooting bf-configd…")
             self._backend = self._wsl(
                 f"cd {self._run_dir} && exec {self._elf} >/dev/null 2>&1")
-            if _wait_port(self._host, self.s.bfcd_tcp_port, timeout=self.s.bfcd_boot_timeout):
+            ws_url = f"ws://127.0.0.1:{self.s.bfcd_ws_port}"
+            mp = self._msp_port or self.s.bfcd_tcp_port
+            if (_wait_port(self._host, self.s.bfcd_tcp_port, timeout=self.s.bfcd_boot_timeout)
+                    and self._wait_ready(ws_url, mp)):
                 self._progress("ready", "Ready", starting=False)
             # If it did not come up, the next iteration sees it down and retries
             # (counted against the rate limit).
@@ -404,6 +416,51 @@ class BfcdSession:
             if _port_free(host, port):
                 return True
             time.sleep(delay)
+        return False
+
+    def _ws_msp_ok(self, ws_url: str, timeout: float = 3.0) -> bool:
+        """True if an MSP exchange succeeds through the WebSocket endpoint.
+
+        This is exactly what the Configurator does (WebSocket → MSP), so it is
+        the honest readiness signal: only when this passes can the Configurator
+        actually connect. Returns False if websockets is unavailable."""
+        if not _HAS_WEBSOCKETS:
+            return False
+        import asyncio
+
+        async def _probe():
+            async with _websockets.connect(
+                    ws_url, subprotocols=["binary"],
+                    open_timeout=timeout, close_timeout=1) as ws:
+                await ws.send(b"$M<\x00\x01\x01")  # MSP_API_VERSION request
+                reply = await asyncio.wait_for(ws.recv(), timeout=timeout)
+                data = bytes(reply) if isinstance(reply, (bytes, bytearray)) else b""
+                return data.startswith(b"$M>") or data.startswith(b"$X>")
+
+        try:
+            return asyncio.run(_probe())
+        except Exception:
+            return False
+
+    def _wait_ready(self, ws_url: str, msp_port: int, timeout: float = 15.0) -> bool:
+        """Block until the backend is *genuinely* serveable, not merely started.
+
+        Prefers an end-to-end MSP exchange through the WebSocket (what the
+        Configurator uses); falls back to probing the raw MSP TCP port if
+        websockets is unavailable. Requires two consecutive successes so a single
+        lucky reply during the boot transient does not count as ready."""
+        end = time.monotonic() + timeout
+        consecutive = 0
+        while time.monotonic() < end:
+            ok = (self._ws_msp_ok(ws_url) if _HAS_WEBSOCKETS
+                  else _speaks_msp(self._host, msp_port))
+            if ok:
+                consecutive += 1
+                if consecutive >= 2:
+                    return True
+            else:
+                consecutive = 0
+            time.sleep(0.2)
         return False
 
     def start(self, dump_text: str, capture_id: str = "adhoc",
@@ -477,6 +534,7 @@ class BfcdSession:
             msp_port = _find_msp_port(host, tcp, count=8, timeout=self.s.bfcd_boot_timeout)
             if msp_port is None:
                 raise BfcdError("bf-configd did not start (serve phase)")
+            self._msp_port = msp_port
 
             # websockify so the WebSocket-only web Configurator can connect.
             self._progress("proxy", "Starting Configurator proxy…")
@@ -490,6 +548,15 @@ class BfcdSession:
             if not _wait_port(host, self.s.bfcd_ws_port, timeout=10):
                 raise BfcdError("websockify proxy did not start "
                                 "(is the 'websockify' package installed?)")
+
+            # Do not report ready until the Configurator could actually connect:
+            # verify a real MSP exchange through the WebSocket endpoint (not just
+            # that the ports are open), so the status reflects the true state.
+            ws_url = f"ws://127.0.0.1:{self.s.bfcd_ws_port}"
+            self._progress("verifying", "Verifying the Configurator can connect…")
+            if not self._wait_ready(ws_url, msp_port):
+                raise BfcdError("bf-configd came up but did not become reachable "
+                                "for the Configurator")
         except BfcdError:
             self._teardown()
             self._progress("idle", "", starting=False)
