@@ -201,11 +201,14 @@ function Install-Backend($name, $bundle, $buildHint) {
 }
 
 # bf-configd is the default backend, so provision it first; SITL is the alternative.
-Install-Backend "bfcd" $BfcdBundle "wsl -d $Distro -- bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2"
-Install-Backend "sitl" $SitlBundle "wsl -d $Distro -- bash scripts/build_sitl.sh 4.5.3 4.4.0 2025.12.2"
+# The build hint covers every firmware version we ship a backend for, so a
+# from-source install matches the bundle's coverage.
+$AllVersions = "4.4.0 4.5.0 4.5.1 4.5.2 4.5.3 4.5.4 2025.12.1 2025.12.2 2025.12.3 2025.12.4"
+Install-Backend "bfcd" $BfcdBundle "wsl -d $Distro -- bash scripts/build_bfcd.sh $AllVersions"
+Install-Backend "sitl" $SitlBundle "wsl -d $Distro -- bash scripts/build_sitl.sh $AllVersions"
 
 Write-Host ""
-Info "Cached bf-configd families:"; & $venvPy -m drone_check bfcd list
+Info "Cached bf-configd versions:"; & $venvPy -m drone_check bfcd list
 Info "Cached SITL versions:";       & $venvPy -m drone_check sitl list
 Write-Host ""
 Ok "Done. Start drone-check with:"

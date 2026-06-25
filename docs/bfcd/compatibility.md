@@ -15,26 +15,35 @@ The matrix lives in `config/bfcd_matrix.yaml` and is consumed by
 | Betaflight 4.3.x | `bf-configd-4.3` | 10.10.x / 2025.12.x | phase 2 |
 | Betaflight 2025.12.x | `bf-configd-2025.12` | 2025.12.x | phase 3 |
 
-Build/verify status: **4.5, 4.4 and 2025.12 build and serve cleanly** via
-`scripts/build_bfcd.sh` (the scripted derivation's anchors match both the classic
-4.4/4.5 layout and the 2025.x platform-refactor layout). Each was verified
-end-to-end against a real capture — reads answered, the craft name from the dump
-served, and MSP writes refused. 4.3 is not yet verified. (The `status` column
-above is the roadmap phase, independent of which binaries are built locally;
-whether a backend binary exists is checked at runtime per firmware family.)
+Build/verify status: **every firmware version drone-check ships a SITL build for
+is built per version and serves cleanly** via `scripts/build_bfcd.sh` — Betaflight
+`4.4.0`, `4.5.0`–`4.5.4` and `2025.12.1`–`2025.12.4` (the scripted derivation's
+anchors match both the classic 4.4/4.5 layout and the 2025.x platform-refactor
+layout). Each binary is built from its own release tag and was verified
+end-to-end — reads answered, the craft name from the dump served, MSP writes
+refused — including the legacy-`#` (`4.5.1`) and framed-MSP-CLI (`4.5.4`) paths.
+4.3 is out of scope (drone-check ships no SITL build for it either). (The `status`
+column above is the roadmap phase, independent of which binaries are built
+locally; whether a backend binary exists is checked at runtime **per version**.)
 
-## Family derivation
+## Family (support axis) vs version (build axis)
 
-The build axis is the **firmware family**: the first two dot-separated
-components of the version (`drone_check.bfcd.metadata.firmware_family`). This
-covers both versioning schemes with one rule:
+The **firmware family** — the first two dot-separated components of the version
+(`drone_check.bfcd.metadata.firmware_family`) — is the *support* axis: the matrix
+above is keyed by family, and a dump whose family is absent fails closed. One rule
+covers both versioning schemes:
 
 - `4.5.3` → family `4.5`
 - `2025.12.1` → family `2025.12`
 
-Each patch level of a family shares one backend candidate. The MVP builds exactly
-per release tag; families may be merged later once golden tests prove MSP/CLI
-compatibility across patch levels (plan §14).
+The **binary**, however, is built and cached **per version** (per release tag),
+exactly like the SITL cache (`bfcd/<version>/bf-configd.elf`). The binary that
+serves a dump is always built from that dump's own tag, so its CLI dialect and
+config schema match faithfully — in particular across the **4.5.4 framed-CLI
+boundary** (≥ 4.5.4 drives the CLI through the framed MSP-CLI; earlier versions
+use the raw `#` prompt), which a single per-family 4.5 binary could not bridge.
+This supersedes the earlier "families may be merged later" idea (plan §14): for an
+inspection tool we build per version to guarantee faithfulness.
 
 ## Target context
 

@@ -427,11 +427,11 @@ def cmd_bfcd_list(args: argparse.Namespace) -> int:
               "or install a bundle with `drone-check bfcd install`.")
         return 0
     total = 0
-    for it in sorted(items, key=lambda x: x["family"]):
+    for it in sorted(items, key=lambda x: x["version"]):
         total += it["bytes"]
         note = "static" if it["static"] else "DYNAMIC (not portable - rebuild)"
-        print(f"  {it['family']:14} {it['bytes']:>8} B  {note}")
-    print(f"{len(items)} family/-ies, {total} bytes total")
+        print(f"  {it['version']:14} {it['bytes']:>8} B  {note}")
+    print(f"{len(items)} version(s), {total} bytes total")
     return 0
 
 
@@ -441,7 +441,7 @@ def cmd_bfcd_package(args: argparse.Namespace) -> int:
 
     try:
         out = _bfcd_session(args).package_cache(
-            str(Path(args.output).resolve()), args.families or [])
+            str(Path(args.output).resolve()), args.versions or [])
     except BfcdError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -454,11 +454,11 @@ def cmd_bfcd_install(args: argparse.Namespace) -> int:
     from .bfcd.session import BfcdError
 
     try:
-        families = _bfcd_session(args).install_bundle(str(Path(args.bundle).resolve()))
+        versions = _bfcd_session(args).install_bundle(str(Path(args.bundle).resolve()))
     except BfcdError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
-    print(f"Installed {len(families)} bf-configd binary/-ies: {', '.join(families)}")
+    print(f"Installed {len(versions)} bf-configd binary/-ies: {', '.join(versions)}")
     return 0
 
 
@@ -531,8 +531,8 @@ def main(argv: list[str] | None = None) -> int:
     p_bpk = bfcd_sub.add_parser(
         "package", help="bundle cached binaries into a portable archive")
     p_bpk.add_argument("output", help="output archive path, e.g. bfcd-bundle.tar.gz")
-    p_bpk.add_argument("families", nargs="*",
-                       help="families to include (default: all cached)")
+    p_bpk.add_argument("versions", nargs="*",
+                       help="versions to include (default: all cached)")
     p_bpk.set_defaults(func=cmd_bfcd_package)
 
     p_bi = bfcd_sub.add_parser(
