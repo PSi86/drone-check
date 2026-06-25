@@ -182,7 +182,7 @@ class BfcdSession:
     # -- distribution (list / package / install pre-built binaries) -------
 
     def list_cache(self) -> list[dict]:
-        """The bf-configd backends present in the cache: ``[{family, bytes, static}]``."""
+        """The bf-configd backends present in the cache: ``[{version, bytes, static}]``."""
         self._check_wsl()
         cache = self.s.bfcd_cache_dir
         script = (
@@ -195,12 +195,12 @@ class BfcdSession:
         for line in (res.stdout or "").splitlines():
             parts = line.strip().split("\t")
             if len(parts) == 3:
-                items.append({"family": parts[0], "bytes": int(parts[1]),
+                items.append({"version": parts[0], "bytes": int(parts[1]),
                               "static": parts[2] == "static"})
         return items
 
-    def package_cache(self, out_win_path: str, families: list[str]) -> str:
-        """Bundle cached binaries (all, or the given families) into a portable
+    def package_cache(self, out_win_path: str, versions: list[str]) -> str:
+        """Bundle cached binaries (all, or the given versions) into a portable
         archive at the host path ``out_win_path``. Returns the script output."""
         self._check_wsl()
         script_path = Path(__file__).resolve().parent.parent.parent / "scripts" / "package_bfcd.sh"
@@ -208,7 +208,7 @@ class BfcdSession:
             raise BfcdError(f"package script not found: {script_path}")
         wsl_script = self._winpath_to_wsl(str(script_path))
         wsl_out = self._winpath_to_wsl(out_win_path)
-        args = " ".join(shlex.quote(v) for v in families)
+        args = " ".join(shlex.quote(v) for v in versions)
         res = self._wsl_b64(f"bash {shlex.quote(wsl_script)} {shlex.quote(wsl_out)} {args}",
                             capture=True, timeout=300)
         if res.returncode != 0:
@@ -217,18 +217,18 @@ class BfcdSession:
 
     def install_bundle(self, bundle_win_path: str) -> list[str]:
         """Install a bundle (created by ``package_cache``) into the cache, verifying
-        checksums. Returns the families the bundle contained."""
+        checksums. Returns the versions the bundle contained."""
         self._check_wsl()
         wsl_bundle = self._winpath_to_wsl(bundle_win_path)
         listing = self._wsl_b64(f"tar -tzf {shlex.quote(wsl_bundle)}", capture=True, timeout=60)
         if listing.returncode != 0:
             raise BfcdError(f"cannot read bundle {bundle_win_path}: "
                             f"{(listing.stderr or '').strip()}")
-        families = sorted({
+        versions = sorted({
             ln.split("/")[1] for ln in (listing.stdout or "").splitlines()
             if ln.strip().endswith("bf-configd.elf") and "/" in ln.strip().strip("./")
         })
-        if not families:
+        if not versions:
             raise BfcdError(f"{bundle_win_path} is not a bf-configd bundle (no binaries inside)")
         cache = self.s.bfcd_cache_dir
         script = (
@@ -239,7 +239,7 @@ class BfcdSession:
         if res.returncode != 0:
             raise BfcdError(f"install failed (checksum or extract): "
                             f"{(res.stderr or res.stdout or '').strip()}")
-        return families
+        return versions
 
     # -- availability (UI gating) ----------------------------------------
 
@@ -272,13 +272,16 @@ class BfcdSession:
 
     # -- planning (works without a backend binary) -----------------------
 
-    def backend_binary_path(self, family: str) -> str:
-        """Where the backend binary for a family is expected in the cache.
+    def backend_binary_path(self, version: str) -> str:
+        """Where the backend binary for a firmware version is expected in the cache.
 
-        Mirrors the SITL cache layout (one subdirectory per family). A WSL path
-        on Windows, a native path on Linux.
+        Mirrors the SITL cache layout exactly (one subdirectory per version), so
+        the binary that serves a dump is always built from that dump's own tag —
+        the CLI dialect and config schema match faithfully across the 4.5.4
+        framed-CLI boundary and any per-version schema differences. A WSL path on
+        Windows, a native path on Linux.
         """
-        return f"{self.s.bfcd_cache_dir}/{family}/bf-configd.elf"
+        return f"{self.s.bfcd_cache_dir}/{version}/bf-configd.elf"
 
     def _binary_exists(self, path: str) -> bool:
         """Best-effort check for the backend binary (never raises)."""
@@ -302,7 +305,9 @@ class BfcdSession:
         if not sel.serveable:
             reason = "; ".join(sel.warnings) or "unsupported dump"
             raise BfcdError(f"bf-configd cannot serve this dump: {reason}")
-        path = self.backend_binary_path(sel.family)
+        # The matrix decides whether the *family* is supported; the binary is
+        # resolved per *version*, so it is always built from the dump's own tag.
+        path = self.backend_binary_path(md.version)
         return BfcdPlan(metadata=md, selection=sel, binary_path=path,
                         binary_available=self._binary_exists(path))
 
@@ -456,7 +461,7 @@ class BfcdSession:
         if not plan.binary_available:
             self._progress("idle", "", starting=False)
             raise BfcdNotBuilt(
-                f"no bf-configd backend for firmware family {plan.selection.family}; "
+                f"no bf-configd backend for firmware {plan.metadata.version}; "
                 f"build it with `bash scripts/build_bfcd.sh {plan.metadata.version}` "
                 f"(expected at {plan.binary_path})"
             )

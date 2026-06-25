@@ -17,13 +17,17 @@
 # Usage:   bash build_bfcd.sh <version> [<version> ...]
 # Example: bash build_bfcd.sh 4.5.3
 #
-# <version> is a Betaflight git tag. The binary is cached per *family*
-# (4.5.3 -> family 4.5), matching config/bfcd_matrix.yaml.
+# <version> is a Betaflight git tag. The binary is cached per *version*
+# (one subdirectory per tag), exactly like the SITL build cache, so bf-configd
+# can serve every firmware version drone-check ships a SITL build for — and the
+# binary that serves a dump is always built from that dump's own tag (matching
+# CLI dialect and config schema faithfully, across the 4.5.4 framed-CLI boundary
+# and any per-version schema differences).
 #
 # Requirements (install once):
 #   sudo apt-get install -y build-essential ruby git
 #
-# Result: $CACHE_DIR/<family>/bf-configd.elf
+# Result: $CACHE_DIR/<version>/bf-configd.elf
 #
 set -euo pipefail
 
@@ -42,6 +46,8 @@ if [ "$#" -lt 1 ]; then
 fi
 
 # 4.5.3 -> 4.5 ; 2025.12.2 -> 2025.12 (mirrors bfcd.metadata.firmware_family).
+# Used only to locate an optional per-family extra patch series; the binary
+# itself is cached per *version* (per tag), like the SITL cache.
 family_of() { echo "$1" | cut -d. -f1-2; }
 
 # Inject the read-only guard at the single MSP write chokepoint
@@ -124,10 +130,11 @@ build_one() {
   local tag="$1"
   local family
   family="$(family_of "$tag")"
-  local out_dir="$CACHE_DIR/$family"
+  # Cache per version (per tag), mirroring the SITL cache layout.
+  local out_dir="$CACHE_DIR/$tag"
   local elf="$out_dir/bf-configd.elf"
   if [ -f "$elf" ]; then
-    echo ">> $tag (family $family): already cached ($elf)"
+    echo ">> $tag: already cached ($elf)"
     return 0
   fi
 

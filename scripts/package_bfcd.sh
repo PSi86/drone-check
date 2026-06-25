@@ -11,16 +11,16 @@
 #
 # Runs inside the Linux environment that hosts the binaries (WSL or native).
 #
-# Usage:   bash package_bfcd.sh <output.tar.gz> [<family> ...]
-#          (no families -> bundle every cached family)
-# Example: bash package_bfcd.sh /mnt/c/Users/me/bfcd-bundle.tar.gz 4.5 2025.12
+# Usage:   bash package_bfcd.sh <output.tar.gz> [<version> ...]
+#          (no versions -> bundle every cached version)
+# Example: bash package_bfcd.sh /mnt/c/Users/me/bfcd-bundle.tar.gz 4.5.3 2025.12.4
 #
 set -euo pipefail
 
 CACHE_DIR="${DRONE_CHECK_BFCD_CACHE:-$HOME/.cache/drone-check/bfcd}"
 
 if [ "$#" -lt 1 ]; then
-  echo "usage: bash package_bfcd.sh <output.tar.gz> [<family> ...]" >&2
+  echo "usage: bash package_bfcd.sh <output.tar.gz> [<version> ...]" >&2
   exit 2
 fi
 out="$1"; shift
@@ -30,14 +30,14 @@ if [ ! -d "$CACHE_DIR" ]; then
   exit 1
 fi
 
-# Families: the ones given, else every cached family that has an elf.
-families=("$@")
-if [ "${#families[@]}" -eq 0 ]; then
+# Versions: the ones given, else every cached version that has an elf.
+versions=("$@")
+if [ "${#versions[@]}" -eq 0 ]; then
   for d in "$CACHE_DIR"/*/; do
-    [ -f "$d/bf-configd.elf" ] && families+=("$(basename "$d")")
+    [ -f "$d/bf-configd.elf" ] && versions+=("$(basename "$d")")
   done
 fi
-if [ "${#families[@]}" -eq 0 ]; then
+if [ "${#versions[@]}" -eq 0 ]; then
   echo "!! no built bf-configd binaries found in $CACHE_DIR" >&2
   exit 1
 fi
@@ -47,21 +47,21 @@ trap 'rm -rf "$stage"' EXIT
 
 echo "drone-check bf-configd bundle" > "$stage/bundle-info.txt"
 echo "created: $(date -u '+%Y-%m-%dT%H:%M:%SZ')" >> "$stage/bundle-info.txt"
-echo "families:" >> "$stage/bundle-info.txt"
+echo "versions:" >> "$stage/bundle-info.txt"
 
 missing=0
-for f in "${families[@]}"; do
-  elf="$CACHE_DIR/$f/bf-configd.elf"
+for v in "${versions[@]}"; do
+  elf="$CACHE_DIR/$v/bf-configd.elf"
   if [ ! -f "$elf" ]; then
-    echo "!! $f: not built (no $elf) — skipping" >&2
+    echo "!! $v: not built (no $elf) — skipping" >&2
     missing=1
     continue
   fi
-  mkdir -p "$stage/$f"
-  cp "$elf" "$stage/$f/bf-configd.elf"
+  mkdir -p "$stage/$v"
+  cp "$elf" "$stage/$v/bf-configd.elf"
   # Note whether it is portable (statically linked) for the info file.
   if file "$elf" | grep -q "statically linked"; then link="static"; else link="dynamic"; fi
-  printf "  %-12s %8d bytes  %s\n" "$f" "$(stat -c%s "$elf")" "$link" >> "$stage/bundle-info.txt"
+  printf "  %-12s %8d bytes  %s\n" "$v" "$(stat -c%s "$elf")" "$link" >> "$stage/bundle-info.txt"
 done
 
 cd "$stage"
@@ -73,4 +73,4 @@ tar -czf "$out" .
 echo
 echo ">> wrote $(du -h "$out" | cut -f1) bundle: $out"
 cat bundle-info.txt
-[ "$missing" -eq 0 ] || echo "(some requested families were missing; see warnings above)"
+[ "$missing" -eq 0 ] || echo "(some requested versions were missing; see warnings above)"

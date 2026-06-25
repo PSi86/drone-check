@@ -38,7 +38,8 @@ is configurable via `folder_template`.
 
 Beyond live capture, the web UI has a **logs page** (`/logs`) to browse past
 captures and **view any capture's configuration in the real Betaflight
-Configurator** via a version-matched SITL instance — see
+Configurator** — served by the read-only **bf-configd** backend (preferred and
+default) with **SITL** as a fallback. See
 [Logs page & "view in Configurator"](#logs-page--view-in-configurator).
 
 ## Requirements
@@ -50,9 +51,9 @@ Configurator** via a version-matched SITL instance — see
 - Close **Betaflight / INAV Configurator** before running — it holds the serial
   port open.
 - **WSL is needed only on Windows** for the "View in Configurator" feature
-  (below). On **Linux** the SITL binaries run **natively** (no WSL). Capturing
-  and rule-checking work fully without any of this, and the button is hidden when
-  no SITL environment is available.
+  (below). On **Linux** the backend binaries (bf-configd / SITL) run **natively**
+  (no WSL). Capturing and rule-checking work fully without any of this, and the
+  button is hidden when no backend environment is available.
 
 ## Install
 
@@ -116,16 +117,18 @@ distro (one-time, Administrator PowerShell, then reboot):
 wsl --install -d Ubuntu
 ```
 
-Then put the SITL binaries in place — either install a pre-built bundle (no
-toolchain needed):
+Then put the backend binaries in place. **bf-configd is the preferred (default)
+backend**, so install it first — either a pre-built bundle (no toolchain needed):
 
 ```powershell
-drone-check sitl install C:\path\to\sitl-bundle.tar.gz
-drone-check sitl list                 # confirm
+drone-check bfcd install C:\path\to\bfcd-bundle.tar.gz
+drone-check bfcd list                 # confirm
 ```
 
-or build them from source inside WSL (see
-[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)). If WSL is absent the feature is
+SITL is the fallback backend; install it too if you want it available
+(`drone-check sitl install C:\path\to\sitl-bundle.tar.gz`). Either can also be
+built from source inside WSL (see [docs/CONFIGURATOR.md](docs/CONFIGURATOR.md) for
+SITL and [docs/bfcd/](docs/bfcd/) for bf-configd). If WSL is absent the feature is
 simply hidden — nothing else is affected.
 
 ## Run
@@ -172,7 +175,8 @@ For the first run against real hardware, follow [HARDWARE_TEST.md](HARDWARE_TEST
 ### Stopping the server
 
 `serve` runs until you stop it. Any of these does a **clean** shutdown (it ends
-an active SITL session and stops the WSL distro it started):
+an active viewer session — bf-configd or SITL — and stops the WSL distro it
+started):
 
 - **Ctrl+C** in the terminal — on Windows a native console handler triggers the
   graceful shutdown directly (works in `cmd.exe` and PowerShell). ⚠️ **Windows
@@ -187,13 +191,53 @@ The web UI has a second page at **`/logs`** (link in the header) that lists ever
 capture in the log directory, newest first — searchable (pilot, craft, UID,
 firmware version, folder) and filterable by verdict and firmware variant. Each
 row can **open the capture folder** and **view the configuration in the real
-Betaflight Configurator**: drone-check loads the capture's `dump all` into a
-version-matched **Betaflight SITL** instance (run under WSL) so an inspector sees
-exactly what the drone owner would see, with all firmware-version-specific GUI
-behaviour handled by the real Configurator.
+Betaflight Configurator**, so an inspector sees exactly what the drone owner would
+see, with all firmware-version-specific GUI behaviour handled by the real
+Configurator rather than re-implemented by us.
 
-One-time setup (build the SITL binaries for the versions you inspect, inside
-WSL):
+Two backends can serve that view. **bf-configd is the preferred — and default —
+backend; SITL is a fallback** for the rare cases bf-configd cannot serve a
+capture. The `/logs` page shows a single **View in Configurator** button per
+capture; which backend it uses is a config choice — `viewer_backend: bfcd`
+(default) or `sitl` in `settings.yaml`.
+
+### bf-configd (preferred, default)
+
+**bf-configd** serves a capture's `dump all` to the Configurator over MSP using a
+backend built from official Betaflight source with a firmware-enforced
+**read-only guard** — every MSP write is refused, so an inspector can view
+everything but nothing can be changed or persisted. It is lighter than SITL (no
+flight loop) and is built **per version**, covering every Betaflight version
+drone-check ships a backend for — `4.4.0`, `4.5.0`–`4.5.4` and
+`2025.12.1`–`2025.12.4` (Linux/WSL). Each binary is built from its own release
+tag, so it serves that version's dump faithfully across the 4.5.4 framed-CLI
+boundary. Prefer it for every inspection; reach for SITL only if bf-configd has
+trouble with a particular capture.
+
+Build the backends once (inside WSL/Linux); the static binaries can then be
+bundled and handed to other machines (which need only WSL, no toolchain):
+
+```powershell
+# build every shipped version into the cache (or pass a subset of tags)
+bash scripts/build_bfcd.sh 4.4.0 4.5.0 4.5.1 4.5.2 4.5.3 4.5.4 2025.12.1 2025.12.2 2025.12.3 2025.12.4
+drone-check bfcd package C:\share\bfcd-bundle.tar.gz   # bundle the cache
+drone-check bfcd install C:\share\bfcd-bundle.tar.gz   # on the target machine
+
+# then on /logs, click "View in Configurator" on a capture -> ws://127.0.0.1:6762
+# or from the CLI, no UI:
+.\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>    # selection only
+.\.venv\Scripts\python.exe -m drone_check bfcd serve <dump.txt>   # run + serve
+```
+
+See **[bf-configd/README.md](bf-configd/README.md)** and **[docs/bfcd/](docs/bfcd/)**.
+
+### SITL (fallback)
+
+**SITL** runs the full Betaflight firmware as a Software-In-The-Loop host. It is
+the **fallback** backend: heavier than bf-configd (it boots the whole FC) and not
+read-only, kept for the cases bf-configd cannot serve a capture. To use it, set
+`viewer_backend: sitl` in `settings.yaml`. One-time setup (build the SITL binaries
+for the versions you inspect, inside WSL):
 
 ```bash
 sudo apt-get install -y build-essential ruby git
@@ -212,35 +256,13 @@ drone-check sitl package C:\share\sitl-bundle.tar.gz   # bundle the cache
 drone-check sitl install C:\share\sitl-bundle.tar.gz   # on the target machine
 ```
 
-Then on `/logs`, click **View in Configurator** and connect the Betaflight web
-Configurator (manual connection) to `ws://127.0.0.1:6761`.
+Then on `/logs` (with `viewer_backend: sitl`), click **View in Configurator** and
+connect the Betaflight web Configurator (manual connection) to
+`ws://127.0.0.1:6761`.
 
-See **[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)** for the full guide: setup,
-how it works, the VTX config patch, caching, configuration and troubleshooting.
-
-### bf-configd (experimental)
-
-**bf-configd** is a read-only alternative to SITL for the same view: it serves a
-`dump all` to the Configurator over MSP using a backend built from official
-Betaflight source with a firmware-enforced **read-only guard** — every MSP write
-is refused, so an inspector can view everything but nothing can be changed or
-persisted. It is the **default** backend for *Im Configurator* and works for the
-Betaflight 4.4, 4.5 and 2025.12 families (Linux/WSL).
-
-The `/logs` page has a single *Im Configurator* button per capture; which backend
-serves it is a config choice — `viewer_backend: bfcd` (default) or `sitl` in
-`settings.yaml`. Build the backend(s) once (inside WSL/Linux):
-
-```powershell
-bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2   # build into the cache
-# then on /logs, click "Im Configurator" on a capture -> ws://127.0.0.1:6762
-
-# or from the CLI, no UI:
-.\.venv\Scripts\python.exe -m drone_check bfcd plan <dump.txt>    # selection only
-.\.venv\Scripts\python.exe -m drone_check bfcd serve <dump.txt>   # run + serve
-```
-
-See **[bf-configd/README.md](bf-configd/README.md)** and **[docs/bfcd/](docs/bfcd/)**.
+See **[docs/CONFIGURATOR.md](docs/CONFIGURATOR.md)** for the full SITL guide:
+setup, how it works, the VTX config patch, caching, configuration and
+troubleshooting.
 
 ## Output
 

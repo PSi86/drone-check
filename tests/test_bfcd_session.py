@@ -20,9 +20,12 @@ def test_prepare_betaflight_selects_backend(monkeypatch):
     s = _session(monkeypatch, binary_present=True)
     plan = s.prepare(BETAFLIGHT_DUMP)
     assert plan.metadata.firmware_family == "4.5"
+    assert plan.metadata.version == "4.5.1"
     assert plan.selection.backend == "bf-configd-4.5"
     assert plan.binary_available
-    assert plan.binary_path.endswith("/4.5/bf-configd.elf")
+    # The matrix is family-keyed, but the binary is resolved per version so it is
+    # built from the dump's own tag.
+    assert plan.binary_path.endswith("/4.5.1/bf-configd.elf")
 
 
 def test_prepare_inav_is_unserveable(monkeypatch):
@@ -73,7 +76,7 @@ def test_watchdog_relaunches_dead_backend(monkeypatch):
         return _FakeProc(alive=True)  # the relaunched backend is up
 
     monkeypatch.setattr(s, "_wsl", fake_wsl)
-    s._run_dir, s._elf = "/run/x", "/cache/4.5/bf-configd.elf"
+    s._run_dir, s._elf = "/run/x", "/cache/4.5.1/bf-configd.elf"
     s._backend = _FakeProc(alive=False)  # already exited (rebooted)
     s._serving = True
     s._start_watchdog()
@@ -105,13 +108,13 @@ def _dist_session(monkeypatch):
     return s
 
 
-def test_list_cache_parses_families_and_static_flag(monkeypatch):
+def test_list_cache_parses_versions_and_static_flag(monkeypatch):
     s = _dist_session(monkeypatch)
     monkeypatch.setattr(s, "_wsl_b64", lambda *a, **k: _Completed(
-        stdout="2025.12\t1475472\tstatic\n4.4\t388896\tdynamic\n"))
+        stdout="2025.12.4\t1475472\tstatic\n4.4.0\t388896\tdynamic\n"))
     assert s.list_cache() == [
-        {"family": "2025.12", "bytes": 1475472, "static": True},
-        {"family": "4.4", "bytes": 388896, "static": False},
+        {"version": "2025.12.4", "bytes": 1475472, "static": True},
+        {"version": "4.4.0", "bytes": 388896, "static": False},
     ]
 
 
@@ -124,18 +127,18 @@ def test_install_bundle_rejects_non_bundle(monkeypatch):
         s.install_bundle(r"C:\x.tar.gz")
 
 
-def test_install_bundle_extracts_and_returns_families(monkeypatch):
+def test_install_bundle_extracts_and_returns_versions(monkeypatch):
     s = _dist_session(monkeypatch)
     monkeypatch.setattr(s, "_winpath_to_wsl", lambda p: "/mnt/c/bundle.tar.gz")
 
     def fake(script, **k):
         if "tar -tzf" in script:
-            return _Completed(stdout="./2025.12/bf-configd.elf\n"
-                                     "./4.4/bf-configd.elf\n./SHA256SUMS\n")
+            return _Completed(stdout="./2025.12.4/bf-configd.elf\n"
+                                     "./4.4.0/bf-configd.elf\n./SHA256SUMS\n")
         return _Completed(returncode=0)
 
     monkeypatch.setattr(s, "_wsl_b64", fake)
-    assert s.install_bundle(r"C:\bundle.tar.gz") == ["2025.12", "4.4"]
+    assert s.install_bundle(r"C:\bundle.tar.gz") == ["2025.12.4", "4.4.0"]
 
 
 def test_install_bundle_fails_on_checksum_mismatch(monkeypatch):
@@ -144,7 +147,7 @@ def test_install_bundle_fails_on_checksum_mismatch(monkeypatch):
 
     def fake(script, **k):
         if "tar -tzf" in script:
-            return _Completed(stdout="./4.4/bf-configd.elf\n")
+            return _Completed(stdout="./4.4.0/bf-configd.elf\n")
         return _Completed(returncode=1, stderr="bf-configd.elf: FAILED")
 
     monkeypatch.setattr(s, "_wsl_b64", fake)

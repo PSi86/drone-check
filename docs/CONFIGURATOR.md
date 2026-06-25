@@ -5,6 +5,13 @@ header) that lists every capture in the log directory and lets an inspector
 re-open any of them — including viewing the exact configuration in the real
 Betaflight Configurator.
 
+> **Which backend?** The "View in Configurator" view can be served by two
+> backends. **bf-configd is the preferred, default backend** (lighter and
+> read-only); **SITL is a fallback** for the rare captures bf-configd cannot
+> serve. This document covers the **SITL** backend specifically — for bf-configd
+> see **[docs/bfcd/](bfcd/)**. Switch backends with `viewer_backend` in
+> `settings.yaml` (`bfcd` default, or `sitl`).
+
 ## The logs page
 
 `/logs` lists every capture folder under `log_dir`, newest first. It is:

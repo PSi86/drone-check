@@ -172,11 +172,14 @@ provision() {
 }
 
 # bf-configd is the default backend, so provision it first; SITL is the alternative.
-provision bfcd "$BFCD_BUNDLE" "sudo apt install -y build-essential ruby git && bash scripts/build_bfcd.sh 4.5.3 4.4.0 2025.12.2"
-provision sitl "$BUNDLE"      "sudo apt install -y build-essential ruby git && bash scripts/build_sitl.sh 4.5.3 4.4.0 2025.12.2"
+# The build hint covers every firmware version we ship a backend for, so a
+# from-source install matches the bundle's coverage.
+ALL_VERSIONS="4.4.0 4.5.0 4.5.1 4.5.2 4.5.3 4.5.4 2025.12.1 2025.12.2 2025.12.3 2025.12.4"
+provision bfcd "$BFCD_BUNDLE" "sudo apt install -y build-essential ruby git && bash scripts/build_bfcd.sh $ALL_VERSIONS"
+provision sitl "$BUNDLE"      "sudo apt install -y build-essential ruby git && bash scripts/build_sitl.sh $ALL_VERSIONS"
 
 echo
-info "Cached bf-configd families:"; "$VENV_PY" -m drone_check bfcd list || true
+info "Cached bf-configd versions:"; "$VENV_PY" -m drone_check bfcd list || true
 info "Cached SITL versions:";       "$VENV_PY" -m drone_check sitl list || true
 echo
 ok "Done. Start drone-check with:  ./.venv/bin/drone-check serve"

@@ -72,17 +72,37 @@ firmware_hash:
   acceptance_level: official
   use_github: true
 
-# "View in Configurator": load a stored capture into a version-matched Betaflight
-# SITL (run under WSL) so the real web Configurator can connect and show exactly
-# what the drone owner would see. SITL binaries are PRE-BUILT per firmware version
-# with scripts/build_sitl.sh (inside WSL); drone-check only selects them. WSL is
-# started on the first "View in Configurator" and stopped when drone-check exits
-# (only if drone-check started it). The build patches VTX support in, so the
-# vtxtable IS shown; only live VTX *device* control is inert (no real radio).
-# drone-check's own dump analysis stays authoritative for VTX power either way.
+# "View in Configurator": serve a stored capture to the real Betaflight web
+# Configurator so an inspector sees exactly what the drone owner would see. Two
+# backends can do this; the logs page shows one button and uses whichever backend
+# is chosen here:
+#   bfcd (default, PREFERRED) – the lighter, read-only bf-configd backend. It
+#                               refuses every MSP write (firmware-enforced), so
+#                               nothing can be changed or persisted.
+#   sitl                      – the full Betaflight SITL instance, kept only as a
+#                               FALLBACK for captures bf-configd cannot serve.
+# Either way the backend binaries are PRE-BUILT per firmware version (inside WSL on
+# Windows, native on Linux); drone-check only selects them. WSL is started on the
+# first view and stopped when drone-check exits (only if it started it). The build
+# patches VTX support in, so the vtxtable IS shown; only live VTX *device* control
+# is inert (no real radio). drone-check's own dump analysis stays authoritative
+# for VTX power either way.
+viewer_backend: bfcd          # "bfcd" (preferred) or "sitl" (fallback)
+
+# bf-configd — the preferred, default backend (built by scripts/build_bfcd.sh).
+bfcd:
+  enabled: true
+  cache_dir: ~/.cache/drone-check/bfcd
+  run_dir: ~/.cache/drone-check/bfcd-run
+  tcp_port: 5761              # shares SITL's UART1->TCP base (only one serves at a time)
+  ws_port: 6762               # websockify endpoint (ws://127.0.0.1:6762)
+  boot_timeout: 30.0
+
+# SITL — the fallback backend (built by scripts/build_sitl.sh). Heavier than
+# bf-configd and not read-only; use it only when bf-configd cannot serve a capture.
 sitl:
   enabled: true
-  distro: Ubuntu              # WSL distro holding the SITL cache
+  distro: Ubuntu              # WSL distro holding the SITL + bf-configd caches
   cache_dir: ~/.cache/drone-check/sitl
   run_dir: ~/.cache/drone-check/run
   tcp_port: 5761              # SITL UART1
