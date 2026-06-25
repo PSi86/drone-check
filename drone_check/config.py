@@ -70,13 +70,17 @@ class Settings:
 
     # "View in Configurator": which backend serves a capture to the real web
     # Configurator. A single choice — the logs page shows one button for it.
-    #   "bfcd" (default) – the lighter, read-only bf-configd backend
-    #   "sitl"           – the full Betaflight SITL instance
+    #   "bfcd" (default, PREFERRED) – the lighter, read-only bf-configd backend
+    #   "sitl"                      – the full Betaflight SITL instance, kept only
+    #                                 as a FALLBACK for captures bf-configd can't
+    #                                 serve
     # The chosen backend must also be enabled below and its environment present.
     viewer_backend: str = "bfcd"
 
-    # Load a capture into a version-matched Betaflight SITL (built under WSL by
-    # scripts/build_sitl.sh) so the real web Configurator can connect to it.
+    # SITL is the FALLBACK backend: load a capture into a version-matched Betaflight
+    # SITL (built under WSL by scripts/build_sitl.sh) so the real web Configurator
+    # can connect to it. Heavier than bf-configd and not read-only — prefer
+    # bf-configd; use SITL only when bf-configd cannot serve a capture.
     sitl_enabled: bool = True
     sitl_distro: str = "Ubuntu"  # WSL distro that has the SITL cache
     # WSL-side paths (~ expands inside the distro).
@@ -86,12 +90,12 @@ class Settings:
     sitl_ws_port: int = 6761  # websockify endpoint for the web Configurator
     sitl_boot_timeout: float = 30.0
 
-    # bf-configd: a lighter, read-only alternative to SITL that serves a dump's
-    # config to the Configurator over MSP without starting the flight loop. The
-    # native backend is built per firmware family (see scripts/build_bfcd.sh).
-    # Distinct ports from SITL so both can coexist. See drone_check/bfcd/.
-    # Experimental read-only alternative to SITL; gated additionally by the Linux
-    # environment being present (so it auto-hides where it can't run).
+    # bf-configd is the PREFERRED, default backend: a lighter, read-only way to
+    # serve a dump's config to the Configurator over MSP without starting the
+    # flight loop. The native backend is built per firmware version (see
+    # scripts/build_bfcd.sh). Distinct websockify port from SITL. Gated
+    # additionally by the Linux environment being present (so it auto-hides where
+    # it can't run). See drone_check/bfcd/.
     bfcd_enabled: bool = True
     bfcd_cache_dir: str = "~/.cache/drone-check/bfcd"
     bfcd_run_dir: str = "~/.cache/drone-check/bfcd-run"

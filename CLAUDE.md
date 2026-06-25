@@ -62,15 +62,22 @@ lines / INAV programming `logic` op 25), firmware-hash allowlist + GitHub.
 Web UI / review tooling (not where checks live, but where they are surfaced):
 
 - `server.py` — FastAPI app: live capture page (`/`), logs page (`/logs`),
-  WebSocket, and the capture/SITL APIs.
+  WebSocket, and the capture / Configurator-backend APIs.
 - `captures.py` — read back stored captures for the logs page (read-only;
   path-traversal-safe id resolution; OS file-manager helper).
-- `sitl.py` — `SitlRunner`: load a capture into a version-matched Betaflight SITL
-  (under WSL) so the real Configurator can inspect it. See
-  `docs/CONFIGURATOR.md`.
-- `scripts/build_sitl.sh` — pre-builds version-matched SITL binaries (patches in
-  the VTX config table + a faster CLI poll timeout). drone-check only selects
-  cached binaries, never builds.
+- **"View in Configurator" has two backends; bf-configd is the preferred,
+  default one and SITL is the fallback** (config `viewer_backend`, default
+  `bfcd`). Keep this ordering in any UI/docs text you touch.
+- `bfcd/session.py` (`drone_check/bfcd/`) — **the preferred backend**:
+  `BfcdSession` serves a capture's `dump all` to the real Configurator over MSP
+  via a read-only bf-configd binary (refuses every MSP write), built per firmware
+  version. See `docs/bfcd/`.
+- `sitl.py` — `SitlRunner`: the **fallback** backend — load a capture into a
+  version-matched Betaflight SITL (under WSL) so the real Configurator can inspect
+  it, when bf-configd can't serve it. See `docs/CONFIGURATOR.md`.
+- `scripts/build_bfcd.sh` / `scripts/build_sitl.sh` — pre-build the version-matched
+  bf-configd / SITL binaries (VTX config table patched in, faster CLI poll).
+  drone-check only selects cached binaries, never builds.
 - `web/index.html`, `web/logs.html` — the two UI pages (inline HTML/CSS/JS).
 
 ## Hard invariants (do not break)
@@ -89,9 +96,11 @@ Web UI / review tooling (not where checks live, but where they are surfaced):
 - `pytest` must stay green; add tests for every new check (pass + fail cases).
 - `drone-check demo` runs the pipeline against built-in sample drones (no HW).
 - `drone-check serve` is the local web UI + USB hot-plug watcher; `/logs` browses
-  past captures and opens any in the real Betaflight Configurator via SITL.
-- See `README.md` for usage, `docs/CONFIGURATOR.md` for the SITL / Configurator
-  feature, and `HARDWARE_TEST.md` for real-hardware bring-up.
+  past captures and opens any in the real Betaflight Configurator via bf-configd
+  (preferred) or SITL (fallback).
+- See `README.md` for usage, `docs/bfcd/` for the bf-configd backend (preferred),
+  `docs/CONFIGURATOR.md` for the SITL fallback, and `HARDWARE_TEST.md` for
+  real-hardware bring-up.
 
 ## Commands (this project, Windows / PowerShell)
 

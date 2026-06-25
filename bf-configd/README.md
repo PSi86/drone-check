@@ -5,17 +5,21 @@ code** (built per firmware version, with the flight loop stripped out) and
 presents it to the Betaflight Configurator over WebSocket, read-only — as if a
 real flight controller were attached, but without starting SITL's full runtime.
 
-It is a lighter, faster, read-only alternative to the existing SITL-based
-"view in Configurator" feature. The guiding principle (from the originating
-plan) is: **Betaflight interprets the dump itself; bf-configd only provides
-runtime stubs, transport and snapshot context.**
+It is the **preferred, default** backend for drone-check's "view in Configurator"
+feature — lighter, faster and read-only — with the full SITL instance kept only
+as a **fallback** for the rare captures bf-configd cannot serve. The guiding
+principle (from the originating plan) is: **Betaflight interprets the dump itself;
+bf-configd only provides runtime stubs, transport and snapshot context.**
 
-## Status: working read-only MVP (Betaflight 4.5)
+## Status: working read-only backend (all shipped Betaflight versions)
 
-A bf-configd backend for the Betaflight 4.5 family builds, boots and serves a
-dump to the Configurator over MSP, firmware-enforced read-only. Verified on
-Linux/WSL: reads answer (e.g. `MSP_FC_VERSION` → 4.5.3); every MSP write
-(`MSP_SET_*`, `MSP_EEPROM_WRITE`) is refused.
+bf-configd builds, boots and serves a dump to the Configurator over MSP,
+firmware-enforced read-only, for **every Betaflight version drone-check ships a
+SITL build for** — `4.4.0`, `4.5.0`–`4.5.4` and `2025.12.1`–`2025.12.4`, each
+built from its own release tag (so the CLI dialect and config schema match the
+dump, including across the 4.5.4 framed-CLI boundary). Verified on Linux/WSL:
+reads answer (e.g. `MSP_FC_VERSION` → 4.5.3); every MSP write (`MSP_SET_*`,
+`MSP_EEPROM_WRITE`) is refused.
 
 Native backend (built by `scripts/build_bfcd.sh` from official Betaflight source):
 

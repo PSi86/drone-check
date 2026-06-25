@@ -17,6 +17,12 @@ Betaflight dump all
    Betaflight Configurator / App
 ```
 
+bf-configd is the **preferred, default** backend for drone-check's "View in
+Configurator" feature; the full Betaflight **SITL** instance is kept only as a
+**fallback** for the rare captures bf-configd cannot serve (select with
+`viewer_backend` in `settings.yaml`). See [../CONFIGURATOR.md](../CONFIGURATOR.md)
+for the SITL backend.
+
 ## Two halves
 
 **Python side (this iteration, in `drone_check/bfcd/`)** — the wrapper and
